@@ -182,16 +182,15 @@ static void process_event(const EventMsg_t* msg) {
          */
         int8_t brow_offset = msg->value_y / 8;
 
+        /* v6.2: 摇杆偏移 + 眉毛微动引擎叠加 */
         if (g_eyeCfg.active_expr < 8) {
-            /* 有活动表情: 在表情基础眉毛上叠加摇杆偏移 */
             int8_t base_l = EXPRESSIONS[g_eyeCfg.active_expr].brow_left;
             int8_t base_r = EXPRESSIONS[g_eyeCfg.active_expr].brow_right;
-            servo_set_target(base_l + brow_offset,
-                             base_r - brow_offset);
+            servo_set_target(base_l - brow_offset + g_eyeCfg.brow_offset_l,
+                             base_r + brow_offset + g_eyeCfg.brow_offset_r);
         } else {
-            /* 无表情 (默认): 以 90° 为中心 */
-            servo_set_target(SERVO_CENTER_DEG + brow_offset,
-                             SERVO_CENTER_DEG - brow_offset);
+            servo_set_target(SERVO_CENTER_DEG - brow_offset + g_eyeCfg.brow_offset_l,
+                             SERVO_CENTER_DEG + brow_offset + g_eyeCfg.brow_offset_r);
         }
         break;
     }
@@ -222,7 +221,7 @@ static void process_event(const EventMsg_t* msg) {
          *   短按 (<500ms): 启动 1.5s 自动回弹到 Normal
          *   长按 (≥500ms): 维持表情不弹回
          */
-        uint16_t held_ms = (uint8_t)msg->value_y;
+        uint16_t held_ms = (uint16_t)msg->value_y;  /* int16_t → 直接使用, 支持 >255ms */
         if (held_ms < ADC_LONG_PRESS_MS) {
             /* 短按: 1.5s 后自动回弹 */
             g_revert_deadline_ms = millis() + 1500;
@@ -297,7 +296,7 @@ void setup() {
     delay(500);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes v6.0 — Morphing Pupil & Angled Mask"));
+    Serial.println(F("  RobotEyes v6.2 — Brow Engine + Happy/Shock/Tear/Sawtooth"));
     Serial.println(F("========================================"));
     Serial.println();
 

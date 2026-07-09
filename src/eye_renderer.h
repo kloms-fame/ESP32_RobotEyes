@@ -27,7 +27,9 @@ typedef enum {
     PUPIL_NORMAL = 0,   /* 标准圆形瞳孔 */
     PUPIL_HEART,        /* 爱心瞳孔 ♥ (期待/狂喜) */
     PUPIL_SLIT,         /* 竖缝瞳孔 | (极度愤怒/野兽模式) */
-    PUPIL_NONE          /* 无瞳孔 (震惊/翻白眼) */
+    PUPIL_NONE,         /* 无瞳孔 (翻白眼) */
+    PUPIL_SHOCK,        /* 瞳孔地震 (震惊: 中空圆环 + 八向电波) */
+    PUPIL_HAPPY         /* 笑形瞳孔 (> < 弯弯眯眼) */
 } PupilType_t;
 
 /* ================================================================
@@ -133,24 +135,39 @@ typedef struct {
     int8_t  target_look_x, target_look_y;
     float   cur_look_x, cur_look_y;
 
-    /* ---- 表情参数 (v6.0) ---- */
-    uint8_t      active_expr;        /* 当前表情索引 (0-7), 255=未设置 */
-    float        target_lid_top;     /* 上眼皮目标 */
-    float        target_lid_bottom;  /* 下眼皮目标 */
-    float        target_lid_slope;   /* 眼皮倾斜度 (-1.0 ~ 1.0) */
-    float        target_pupil_scale; /* 瞳孔缩放目标 */
-    PupilType_t  target_pupil_type;  /* 瞳孔形状目标 */
-    PupilType_t  cur_pupil_type;     /* 瞳孔当前形状 */
+    /* ---- 表情参数 (v6.1) ---- */
+    uint8_t      active_expr;         /* 当前表情索引 (0-7), 255=未设置 */
+    float        target_lid_top;      /* 上眼皮目标 (对称) */
+    float        target_lid_top_l;    /* 左眼上眼皮 (Skeptic 非对称) */
+    float        target_lid_top_r;    /* 右眼上眼皮 (Skeptic 非对称) */
+    float        target_lid_bottom;   /* 下眼皮目标 */
+    float        target_lid_slope;    /* 眼皮倾斜度 (-1.0 ~ 1.0) */
+    float        target_pupil_scale;  /* 瞳孔缩放目标 */
+    PupilType_t  target_pupil_type;   /* 瞳孔形状目标 */
+    PupilType_t  cur_pupil_type;      /* 瞳孔当前形状 */
 
-    float   cur_lid_top;       /* 上眼皮当前值 (lerp) */
+    float   cur_lid_top;       /* 上眼皮当前值 (lerp, 对称) */
+    float   cur_lid_top_l;     /* 左眼上眼皮 (lerp) */
+    float   cur_lid_top_r;     /* 右眼上眼皮 (lerp) */
     float   cur_lid_bottom;    /* 下眼皮当前值 (lerp) */
     float   cur_lid_slope;     /* 倾斜度当前值 (lerp) */
     float   cur_pupil_scale;   /* 瞳孔缩放当前值 (lerp) */
 
-    /* ---- 特殊动画 (v6.0) ---- */
-    float    anim_peak_scale;  /* 动画峰值瞳孔 */
-    uint32_t anim_start_ms;    /* 动画开始时间 */
-    uint16_t anim_duration_ms; /* 动画持续时间 */
+    /* ---- 特殊动画 (v6.1) ---- */
+    float    anim_peak_scale;   /* 动画峰值瞳孔 */
+    uint32_t anim_start_ms;     /* 动画开始时间 */
+    uint16_t anim_duration_ms;  /* 动画持续时间 */
+
+    /* ---- Sleepy 锯齿瞌睡引擎 (v6.2) ---- */
+    uint32_t sleepy_phase_ms;
+    float    sleepy_lid;        /* 瞌睡当前 lid 值 */
+
+    /* ---- 眉毛微动引擎 (v6.2) ---- */
+    float    brow_phase;        /* 眉毛呼吸 sin 相位 */
+    float    brow_angry_phase;  /* Angry 眉颤相位 */
+    float    brow_burst_timer;  /* Angry 爆发计时器 */
+    int8_t   brow_offset_l;     /* 左眉当前微动偏移 */
+    int8_t   brow_offset_r;     /* 右眉当前微动偏移 */
 } EyeConfig_t;
 
 typedef enum { BLINK_IDLE = 0, BLINK_CLOSING, BLINK_HOLD, BLINK_OPENING } BlinkPhase_t;
