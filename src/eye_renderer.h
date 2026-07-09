@@ -1,6 +1,18 @@
 /**
  * @file    eye_renderer.h
- * @brief   RobotEyes 眼型渲染 v5.5 — Style A 超宽眼 + 高光防穿模
+ * @brief   RobotEyes 眼型渲染 v7.0 — OCP 解耦管线
+ * @author  Rennick (AI 辅助开发)
+ * @date    2026-07-09
+ *
+ *  架构:
+ *    eye_geom_compute() → EyeGeom_t (纯几何, 无副作用)
+ *      → eye_draw_body()    (RBox 眼眶)
+ *      → eye_draw_pupil()   (函数指针表分派, OCP)
+ *      → eye_draw_shine()   (高光)
+ *      → eye_draw_lid_mask()(眼皮遮罩 + slope)
+ *
+ *  OCP: 新增瞳孔类型 = 新增 draw 函数 + 注册分派表, 核心管线零修改
+ *  OCP: 新增风格 = 新增 EyeStyle_t 常量 (宏切换)
  */
 
 #ifndef EYE_RENDERER_H
@@ -10,30 +22,31 @@
 #include <U8g2lib.h>
 
 /* ================================================================
- *  风格选择
+ *  风格选择 (OCP: 宏切换, 不改管线)
  * ================================================================ */
-#define EYE_STYLE_A   /* 动漫星瞳: 56×44 超大宽眼 */
-// #define EYE_STYLE_B   /* 委屈修勾 */
-// #define EYE_STYLE_C   /* 傲娇小兽 */
+#define EYE_STYLE_A   /* 动漫星瞳: 56x44 */
+// #define EYE_STYLE_B   /* 委屈修勾: 46x32 */
+// #define EYE_STYLE_C   /* 傲娇小兽: 40x36 */
 
 #if !defined(EYE_STYLE_A) && !defined(EYE_STYLE_B) && !defined(EYE_STYLE_C)
 #define EYE_STYLE_A
 #endif
 
 /* ================================================================
- *  瞳孔变异类型 (v6.0)
+ *  PupilType_t — 瞳孔变异类型 (OCP: 新增类型仅需加枚举 + 绘制函数)
  * ================================================================ */
 typedef enum {
     PUPIL_NORMAL = 0,   /* 标准圆形瞳孔 */
-    PUPIL_HEART,        /* 爱心瞳孔 ♥ (期待/狂喜) */
-    PUPIL_SLIT,         /* 竖缝瞳孔 | (极度愤怒/野兽模式) */
+    PUPIL_HEART,        /* 爱心瞳孔 (期待/狂喜) */
+    PUPIL_SLIT,         /* 竖缝瞳孔 (愤怒/野兽) */
     PUPIL_NONE,         /* 无瞳孔 (翻白眼) */
-    PUPIL_SHOCK,        /* 瞳孔地震 (震惊: 中空圆环 + 八向电波) */
-    PUPIL_HAPPY         /* 笑形瞳孔 (> < 弯弯眯眼) */
+    PUPIL_SHOCK,        /* 中空圆环 + 电波线 (震惊) */
+    PUPIL_HAPPY,        /* 笑形 >< 眯眼 */
+    PUPIL_COUNT          /* 类型总数 (用于分派表) */
 } PupilType_t;
 
 /* ================================================================
- *  通用
+ *  通用常量
  * ================================================================ */
 #define EYE_CX            64
 #define EYE_CY            32
@@ -41,135 +54,116 @@ typedef enum {
 #define LOOK_SMOOTH_FACTOR 0.22f
 
 /* ================================================================
- *  Style A: 动漫星瞳 — 超宽 56×44
- * ================================================================ */
-#ifdef EYE_STYLE_A
-#define EYE_W              56
-#define EYE_H              44
-#define EYE_RADIUS         20
-#define PUPIL_SHAPE         0
-#define PUPIL_R            10
-#define PUPIL_RX           10
-#define PUPIL_RY           10
-#define LOOK_MAX           16
-#define SHINE_PARALLAX     0.55f
-#define SHINE1_DX          -6
-#define SHINE1_DY          -7
-#define SHINE1_R            4
-#define SHINE2_DX           7
-#define SHINE2_DY           5
-#define SHINE2_R            2
-#define SHINE3_DX          -2
-#define SHINE3_DY           3
-#define SHINE3_R            1
-#endif
-
-/* ================================================================
- *  Style B: 委屈修勾
- * ================================================================ */
-#ifdef EYE_STYLE_B
-#define EYE_W              46
-#define EYE_H              32
-#define EYE_RADIUS         16
-#define PUPIL_SHAPE         2
-#define PUPIL_R             0
-#define PUPIL_RX           10
-#define PUPIL_RY            9
-#define LOOK_MAX           13
-#define SHINE_PARALLAX     0.30f
-#define SHINE1_DX          -5
-#define SHINE1_DY          -4
-#define SHINE1_R            3
-#define SHINE2_DX           5
-#define SHINE2_DY          -3
-#define SHINE2_R            2
-#define SHINE3_DX           0
-#define SHINE3_DY           0
-#define SHINE3_R            0
-#endif
-
-/* ================================================================
- *  Style C: 傲娇小兽
- * ================================================================ */
-#ifdef EYE_STYLE_C
-#define EYE_W              40
-#define EYE_H              36
-#define EYE_RADIUS         12
-#define PUPIL_SHAPE         1
-#define PUPIL_R             0
-#define PUPIL_RX            6
-#define PUPIL_RY           13
-#define LOOK_MAX           12
-#define SHINE_PARALLAX     0.30f
-#define SHINE1_DX          -3
-#define SHINE1_DY          -7
-#define SHINE1_R            3
-#define SHINE2_DX           0
-#define SHINE2_DY           0
-#define SHINE2_R            0
-#define SHINE3_DX           0
-#define SHINE3_DY           0
-#define SHINE3_R            0
-#endif
-
-/* ================================================================
- *  updateDisplayArea() tile 坐标
+ *  EyeStyle_t — 风格参数 (OCP: 新增风格 = 新增此结构体常量)
  *
- *  Style A: W=56, H=44, cx=64, cy=32
- *  x: [36, 92]  y: [10, 54]
- *  tile: tx=4, ty=1, w=8, h=6 → 384 bytes
- * ================================================================ */
-#define EYE_TILE_X    4
-#define EYE_TILE_Y    1
-#define EYE_TILE_W    8
-#define EYE_TILE_H    6
-
-/* ================================================================
- *  EyeConfig_t / BlinkState_t
+ *  所有几何尺寸集中在此, 渲染管线通过此结构体获取参数,
+ *  不依赖任何硬编码宏。
  * ================================================================ */
 typedef struct {
-    uint8_t cx, cy;        /* 眼睛中心坐标 */
-    float   lid;           /* 眨眼遮挡比例 (0.0=全开, 1.0=全闭) */
+    uint8_t  eye_w;           /* 眼宽 (px) */
+    uint8_t  eye_h;           /* 眼高 (px) */
+    uint8_t  eye_radius;      /* 圆角半径 */
+    uint8_t  pupil_r;         /* 瞳孔基础半径 */
+    uint8_t  look_max;        /* 视线最大偏移 (px) */
+    float    shine_parallax;  /* 高光视差系数 (0~1) */
 
-    /* ---- 视线 ---- */
+    /* 高光 1 */
+    int8_t   s1_dx, s1_dy;
+    uint8_t  s1_r;
+    /* 高光 2 */
+    int8_t   s2_dx, s2_dy;
+    uint8_t  s2_r;
+    /* 高光 3 */
+    int8_t   s3_dx, s3_dy;
+    uint8_t  s3_r;
+} EyeStyle_t;
+
+/* ================================================================
+ *  EyeGeom_t — 单帧几何计算结果 (纯数据, 无副作用)
+ *
+ *  由 eye_geom_compute() 一次性计算, 所有 draw 函数只读不写。
+ *  复用此结构体避免在绘制循环中重复计算。
+ * ================================================================ */
+typedef struct {
+    /* 眼眶边界 */
+    int16_t  eye_l, eye_t;    /* 左上角 */
+    int16_t  eye_r, eye_b;    /* 右下角 */
+    int16_t  hw, hh;          /* 半宽/半高 (便捷) */
+
+    /* 瞳孔位置 (已 clamp) */
+    int16_t  pupil_cx, pupil_cy;
+    int16_t  pupil_r;         /* 缩放后半径 */
+
+    /* 瞳孔类型 (绘制分派用) */
+    PupilType_t pupil_type;
+
+    /* 高光位置 (已 clamp, 含视差) */
+    int16_t  s1_x, s1_y;
+    int16_t  s2_x, s2_y;
+    int16_t  s3_x, s3_y;
+
+    /* 眼皮遮罩几何 */
+    int16_t  lid_top_base_y;   /* 上眼皮基线 Y */
+    int16_t  lid_slope_px;     /* 斜率偏移量 (px) */
+    int16_t  lid_y_inner;      /* 内眼角上眼皮 Y */
+    int16_t  lid_y_outer;      /* 外眼角上眼皮 Y */
+    int16_t  lid_y_left;       /* 左角上眼皮 Y (is_left 调整后) */
+    int16_t  lid_y_right;      /* 右角上眼皮 Y (is_left 调整后) */
+    int16_t  lid_bottom_h;     /* 下眼皮高度 (0=无) */
+
+    /* 当前是否为左眼 */
+    bool     is_left;
+} EyeGeom_t;
+
+/* ================================================================
+ *  EyeConfig_t — 运行时状态 (对外 API 不变, 保持兼容)
+ * ================================================================ */
+typedef struct {
+    uint8_t cx, cy;           /* 眼睛中心坐标 */
+    float   lid;              /* 眨眼遮挡比例 (0.0=全开, 1.0=全闭) */
+
+    /* 视线 */
     int8_t  target_look_x, target_look_y;
     float   cur_look_x, cur_look_y;
 
-    /* ---- 表情参数 (v6.1) ---- */
-    uint8_t      active_expr;         /* 当前表情索引 (0-7), 255=未设置 */
-    float        target_lid_top;      /* 上眼皮目标 (对称) */
-    float        target_lid_top_l;    /* 左眼上眼皮 (Skeptic 非对称) */
-    float        target_lid_top_r;    /* 右眼上眼皮 (Skeptic 非对称) */
-    float        target_lid_bottom;   /* 下眼皮目标 */
-    float        target_lid_slope;    /* 眼皮倾斜度 (-1.0 ~ 1.0) */
-    float        target_pupil_scale;  /* 瞳孔缩放目标 */
-    PupilType_t  target_pupil_type;   /* 瞳孔形状目标 */
-    PupilType_t  cur_pupil_type;      /* 瞳孔当前形状 */
+    /* 表情参数 */
+    uint8_t      active_expr;
+    float        target_lid_top;
+    float        target_lid_top_l;
+    float        target_lid_top_r;
+    float        target_lid_bottom;
+    float        target_lid_slope;
+    float        target_pupil_scale;
+    PupilType_t  target_pupil_type;
+    PupilType_t  cur_pupil_type;
 
-    float   cur_lid_top;       /* 上眼皮当前值 (lerp, 对称) */
-    float   cur_lid_top_l;     /* 左眼上眼皮 (lerp) */
-    float   cur_lid_top_r;     /* 右眼上眼皮 (lerp) */
-    float   cur_lid_bottom;    /* 下眼皮当前值 (lerp) */
-    float   cur_lid_slope;     /* 倾斜度当前值 (lerp) */
-    float   cur_pupil_scale;   /* 瞳孔缩放当前值 (lerp) */
+    float   cur_lid_top;
+    float   cur_lid_top_l;
+    float   cur_lid_top_r;
+    float   cur_lid_bottom;
+    float   cur_lid_slope;
+    float   cur_pupil_scale;
 
-    /* ---- 特殊动画 (v6.1) ---- */
-    float    anim_peak_scale;   /* 动画峰值瞳孔 */
-    uint32_t anim_start_ms;     /* 动画开始时间 */
-    uint16_t anim_duration_ms;  /* 动画持续时间 */
+    /* 特殊动画 */
+    float    anim_peak_scale;
+    uint32_t anim_start_ms;
+    uint16_t anim_duration_ms;
 
-    /* ---- Sleepy 锯齿瞌睡引擎 (v6.2) ---- */
+    /* Sleepy 瞌睡引擎 */
     uint32_t sleepy_phase_ms;
-    float    sleepy_lid;        /* 瞌睡当前 lid 值 */
+    float    sleepy_lid;
 
-    /* ---- 眉毛微动引擎 (v6.2) ---- */
-    float    brow_phase;        /* 眉毛呼吸 sin 相位 */
-    float    brow_angry_phase;  /* Angry 眉颤相位 */
-    float    brow_burst_timer;  /* Angry 爆发计时器 */
-    int8_t   brow_offset_l;     /* 左眉当前微动偏移 */
-    int8_t   brow_offset_r;     /* 右眉当前微动偏移 */
+    /* 眉毛微动引擎 */
+    float    brow_phase;
+    float    brow_angry_phase;
+    float    brow_burst_timer;
+    int8_t   brow_offset_l;
+    int8_t   brow_offset_r;
 } EyeConfig_t;
 
+/* ================================================================
+ *  BlinkState_t — 眨眼状态机
+ * ================================================================ */
 typedef enum { BLINK_IDLE = 0, BLINK_CLOSING, BLINK_HOLD, BLINK_OPENING } BlinkPhase_t;
 
 typedef struct {
@@ -185,16 +179,44 @@ typedef struct {
 #define BLINK_INTERVAL_MIN 2000
 #define BLINK_INTERVAL_MAX 6000
 
+/* ================================================================
+ *  updateDisplayArea() tile 坐标 (Style A 默认)
+ * ================================================================ */
+#define EYE_TILE_X    4
+#define EYE_TILE_Y    1
+#define EYE_TILE_W    8
+#define EYE_TILE_H    6
+
+/* ================================================================
+ *  公开 API
+ * ================================================================ */
+
+/* ---- 获取当前激活的风格 ---- */
+const EyeStyle_t* eye_style_get(void);
+
+/* ---- 几何计算 (纯函数, 无副作用) ---- */
+void eye_geom_compute(EyeGeom_t* geom,
+                      const EyeConfig_t* cfg,
+                      const EyeStyle_t* style,
+                      bool is_left);
+
+/* ---- 分阶段绘制 (只读 geom, 只写 disp) ---- */
+void eye_draw_body(U8G2* disp, const EyeGeom_t* geom);
+void eye_draw_pupil(U8G2* disp, const EyeGeom_t* geom);
+void eye_draw_shine(U8G2* disp, const EyeGeom_t* geom);
+void eye_draw_lid_mask(U8G2* disp, const EyeGeom_t* geom);
+
+/* ---- 渲染入口 (组装管线) ---- */
+void eye_render(U8G2* disp, EyeConfig_t* cfg, bool is_left);
+
+/* ---- 配置 & 状态 API (保持兼容) ---- */
 void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy);
 void eye_set_look(EyeConfig_t* cfg, int8_t x, int8_t y);
 void eye_look_update(EyeConfig_t* cfg);
 void eye_look_reset(EyeConfig_t* cfg);
-
-/* ---- 表情切换 (v5.6) ---- */
 void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index);
 void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms);
 void blink_state_init(BlinkState_t* state);
 void blink_state_update(BlinkState_t* state, EyeConfig_t* cfg, uint32_t now_ms);
-void eye_render(U8G2* disp, EyeConfig_t* cfg, bool is_left);
 
-#endif
+#endif /* EYE_RENDERER_H */
