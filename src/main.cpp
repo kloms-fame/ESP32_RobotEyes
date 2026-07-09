@@ -22,6 +22,7 @@
 #include "eye_renderer.h"
 #include "input_task.h"
 #include "servo_task.h"
+#include "expressions.h"
 
 /* ---- 双屏 ---- */
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_leftDisp(U8G2_R0, U8X8_PIN_NONE);
@@ -178,6 +179,26 @@ static void process_event(const EventMsg_t* msg) {
         break;
     }
 
+    case EVT_EXPR_SET: {
+        /* 表情切换: 眼型 + 眉毛同步发起
+         *  眼型参数走 lerp 过渡 (eye_expr_update)
+         *  眉毛角度推给 ServoTask 非阻塞步进
+         *  两者在同一时刻设置目标值, 视觉上同步变化
+         */
+        uint8_t idx = msg->value_x;
+        if (idx < 8) {
+            eye_set_expression(&g_eyeCfg, idx);
+
+            /* 眉毛联动: 推目标角度给 ServoTask */
+            servo_set_target(EXPRESSIONS[idx].brow_left,
+                             EXPRESSIONS[idx].brow_right);
+
+            Serial.print(F("[EXPR] Switched to "));
+            Serial.println(EXPRESSIONS[idx].name);
+        }
+        break;
+    }
+
     case EVT_BUTTON_SHORT:
         Serial.println(F("[BTN] Short press (reserved)"));
         break;
@@ -240,7 +261,7 @@ void setup() {
     delay(500);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes v5.2 — Eye Style Selector"));
+    Serial.println(F("  RobotEyes v5.6 — Expression Switch"));
     Serial.println(F("========================================"));
     Serial.println();
 
@@ -303,6 +324,7 @@ void loop() {
 
     /* ---- 状态更新 ---- */
     eye_look_update(&g_eyeCfg);
+    eye_expr_update(&g_eyeCfg, now);
     blink_state_update(&g_blinkState, &g_eyeCfg, now);
 
     /* ---- 渲染 ---- */

@@ -116,10 +116,27 @@
  *  EyeConfig_t / BlinkState_t
  * ================================================================ */
 typedef struct {
-    uint8_t cx, cy;
-    float   lid;
+    uint8_t cx, cy;        /* 眼睛中心坐标 */
+    float   lid;           /* 眨眼遮挡比例 (0.0=全开, 1.0=全闭) */
+
+    /* ---- 视线 ---- */
     int8_t  target_look_x, target_look_y;
     float   cur_look_x, cur_look_y;
+
+    /* ---- 表情参数 (v5.6) ---- */
+    uint8_t active_expr;       /* 当前表情索引 (0-7), 255=未设置 */
+    float   target_lid_top;    /* 上眼皮目标 */
+    float   target_lid_bottom; /* 下眼皮目标 */
+    float   target_pupil_scale;/* 瞳孔缩放目标 */
+
+    float   cur_lid_top;       /* 上眼皮当前值 (lerp) */
+    float   cur_lid_bottom;    /* 下眼皮当前值 (lerp) */
+    float   cur_pupil_scale;   /* 瞳孔缩放当前值 (lerp) */
+
+    /* ---- 特殊动画 (v5.6) ---- */
+    float    anim_peak_scale;  /* 动画峰值瞳孔 */
+    uint32_t anim_start_ms;    /* 动画开始时间 */
+    uint16_t anim_duration_ms; /* 动画持续时间 */
 } EyeConfig_t;
 
 typedef enum { BLINK_IDLE = 0, BLINK_CLOSING, BLINK_HOLD, BLINK_OPENING } BlinkPhase_t;
@@ -141,6 +158,10 @@ void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy);
 void eye_set_look(EyeConfig_t* cfg, int8_t x, int8_t y);
 void eye_look_update(EyeConfig_t* cfg);
 void eye_look_reset(EyeConfig_t* cfg);
+
+/* ---- 表情切换 (v5.6) ---- */
+void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index);
+void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms);
 void blink_state_init(BlinkState_t* state);
 void blink_state_update(BlinkState_t* state, EyeConfig_t* cfg, uint32_t now_ms);
 void eye_render(U8G2* disp, EyeConfig_t* cfg);

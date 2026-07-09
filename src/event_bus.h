@@ -15,12 +15,13 @@
  *  事件类型
  * ================================================================ */
 typedef enum {
-    EVT_NONE = 0,
-    EVT_JOYSTICK_MOVE,
-    EVT_BUTTON_SHORT,
-    EVT_BUTTON_LONG,
-    EVT_FORCE_RETURN,
-    EVT_SERVO_MOVE,
+    EVT_NONE = 0,          /* 空事件 */
+    EVT_JOYSTICK_MOVE,     /* 摇杆移动 */
+    EVT_BUTTON_SHORT,      /* SW 短按 */
+    EVT_BUTTON_LONG,       /* SW 长按 (Force Return) */
+    EVT_FORCE_RETURN,      /* 强制归位 */
+    EVT_SERVO_MOVE,        /* 舵机移动 */
+    EVT_EXPR_SET,          /* 表情切换: value_x=索引(0-7) */
 } EventType_t;
 
 /* ================================================================

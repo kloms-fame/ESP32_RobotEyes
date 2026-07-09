@@ -14,6 +14,7 @@
 #include "input_task.h"
 #include "event_bus.h"
 #include "force_return.h"
+#include "expressions.h"
 #include "pin_config.h"
 #include <Arduino.h>
 #include <algorithm>
@@ -35,6 +36,39 @@ static uint8_t g_stable_cnt = 0;
 
 /* ---- 稳定阈值 (归一化单位) ---- */
 #define STABLE_THRESHOLD  5
+
+/* ================================================================
+ *  ADC 键盘去抖状态机 (v5.6)
+ *
+ *  时序设计 (防止"长按才响应"):
+ *    边沿检测: NONE→KEY 跳变后, 30ms 去抖确认一次, 立即触发
+ *    不积累稳定周期, 不要求持续按住
+ *    长按判定是独立计时器, 不与触发判定混合
+ *
+ *  状态:
+ *    adc_last_stable:  上次确认的按键 (0=NONE, 1-8=S1-S8)
+ *    adc_current_raw:  当前采样的按键
+ *    adc_debounce_ms:  去抖计时起点
+ * ================================================================ */
+static uint8_t  adc_last_stable = 0;
+static uint8_t  adc_current_raw = 0;
+static uint32_t adc_debounce_ms = 0;
+
+#define ADC_KEY_DEBOUNCE_MS   30   /* 边沿去抖窗口: 30ms */
+#define ADC_KEY_NONE           0   /* 无按键 */
+
+/* ---- 查表: ADC 值 → 表情索引 (0-7), 255=无按键 ---- */
+static uint8_t adc_lookup_expr(uint16_t adc_val) {
+    if (adc_val >= ADC_KEY_NONE_MIN && adc_val <= ADC_KEY_NONE_MAX) {
+        return ADC_KEY_NONE;  /* 无按键 */
+    }
+    for (uint8_t i = 0; i < ADC_KEY_MAP_COUNT; i++) {
+        if (adc_val >= ADC_KEY_MAP[i].min && adc_val <= ADC_KEY_MAP[i].max) {
+            return ADC_KEY_MAP[i].expr_index + 1;  /* 返回 1-8 */
+        }
+    }
+    return ADC_KEY_NONE;  /* 未命中任何区间, 视为无按键 */
+}
 
 /* ================================================================
  *  辅助: 快速排序 (冒泡, 10元素足够快)
@@ -188,10 +222,54 @@ void input_task_run(void* pvParameters) {
             g_stable_cnt = 0;  /* 重置, 等待下一轮变化 */
         }
 
-        /* ---- 5. SW 按键检测 (Force Return) ---- */
+        /* ---- 5. ADC 键盘检测 (边沿触发, <50ms 响应) ---- */
+        {
+            /* 采集 ADC 键盘 (8次平均去噪) */
+            int32_t kb_sum = 0;
+            for (uint8_t i = 0; i < 8; i++) {
+                kb_sum += analogRead(PIN_ADC_KEYBOARD);
+            }
+            uint16_t kb_avg = (uint16_t)(kb_sum / 8);
+
+            /* 查表: ADC → 键值 (1-8) 或 0=NONE */
+            uint8_t kb_current = adc_lookup_expr(kb_avg);
+
+            /* 边沿去抖: 值变化 → 重置计时器 */
+            if (kb_current != adc_current_raw) {
+                adc_current_raw = kb_current;
+                adc_debounce_ms = millis();
+            }
+
+            /* 去抖窗口到期 → 确认边沿 */
+            uint32_t kb_now = millis();
+            if (kb_now - adc_debounce_ms >= ADC_KEY_DEBOUNCE_MS) {
+                if (adc_current_raw != adc_last_stable) {
+                    /* 按键按下: 推送 EVT_EXPR_SET */
+                    if (adc_current_raw != ADC_KEY_NONE) {
+                        EventMsg_t kmsg;
+                        kmsg.type    = EVT_EXPR_SET;
+                        kmsg.value_x = adc_current_raw - 1;  /* 转为 0-based 索引 */
+                        kmsg.value_y = 0;
+                        event_bus_push(&kmsg);
+
+                        Serial.print(F("[KEY] S"));
+                        Serial.print((int)adc_current_raw);
+                        Serial.print(F(" pressed (ADC="));
+                        Serial.print(kb_avg);
+                        Serial.print(F(") → expr="));
+                        Serial.println(EXPRESSIONS[adc_current_raw - 1].name);
+                    }
+                    /* 否则: 按键释放 (静默, 不产生事件) */
+
+                    adc_last_stable = adc_current_raw;
+                }
+            }
+        }
+
+        /* ---- 6. SW 按键检测 (Force Return) ---- */
         force_return_poll(millis());
 
-        /* ---- 6. 周期延迟 ---- */
+        /* ---- 7. 周期延迟 ---- */
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10));
     }
 }
