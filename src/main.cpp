@@ -1,16 +1,29 @@
 /**
  * @file    main.cpp
- * @brief   RobotEyes v5 参数化几何眼型引擎 (输入模式释放)
+ * @brief   RobotEyes v5 阶段3 — 摇杆视线 + 舵机眉毛 + Force Return
  * @author  Rennick (AI 辅助开发)
  * @date    2026-07-09
+ *
+ *  架构:
+ *    InputTask (生产者) ──→ EventBus (FreeRTOS Queue) ──→ loop() (唯一消费者)
+ *                                                              │
+ *                                                         ServoTask (执行器)
+ *
+ *  角色: 3 类 (InputTask, ServoTask, main loop) — 不新增 Task
  */
 
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "pin_config.h"
+#include "event_bus.h"
 #include "eye_renderer.h"
+#include "input_task.h"
+#include "servo_task.h"
 
+/* ---- 双屏 ---- */
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_leftDisp(U8G2_R0, U8X8_PIN_NONE);
 U8G2_SSD1306_128X64_NONAME_F_SW_I2C g_rightDisp(U8G2_R0,
                                                   PIN_SW_I2C_SCL,
@@ -18,70 +31,64 @@ U8G2_SSD1306_128X64_NONAME_F_SW_I2C g_rightDisp(U8G2_R0,
                                                   U8X8_PIN_NONE);
 bool g_leftReady  = false;
 bool g_rightReady = false;
+
+/* ---- 运行时状态 ---- */
 static EyeConfig_t  g_eyeCfg;
 static BlinkState_t g_blinkState;
-static MicroState_t g_microState;
+
+/* ---- 帧节拍 ---- */
+static uint32_t g_last_frame_ms = 0;
+
+/* ---- 调试日志节拍 ---- */
+static uint32_t g_last_beat_ms  = 0;
 
 /* ================================================================
  *  esp32_fast_sw_i2c_gpio_cb() v5.1 — 标准开漏 I2C
- *
- *  拉低(arg=0): GPIO.out_w1tc + GPIO.enable_w1ts (输出, 驱动低)
- *  释放(arg=1): GPIO.enable_w1tc (输入, 高阻, 上拉电阻拉到高)
- *
- *  关键: 释放时必须切输入模式，让从机也能拉低 SDA (ACK/NACK)
  * ================================================================ */
 extern "C" uint8_t esp32_fast_sw_i2c_gpio_cb(u8x8_t *u8x8, uint8_t msg,
                                               uint8_t arg_int, void *arg_ptr) {
     switch (msg) {
 
-    case U8X8_MSG_GPIO_AND_DELAY_INIT: {  /* 40 */
-        /* 初始态: 输入 + 内部上拉, 模拟 idle 高电平 */
+    case U8X8_MSG_GPIO_AND_DELAY_INIT:
         pinMode(PIN_SW_I2C_SCL, INPUT_PULLUP);
         pinMode(PIN_SW_I2C_SDA, INPUT_PULLUP);
         break;
-    }
 
-    case U8X8_MSG_DELAY_MILLI:          /* 41 */
+    case U8X8_MSG_DELAY_MILLI:
         delay(arg_int);
         break;
 
-    case U8X8_MSG_DELAY_10MICRO:        /* 42 */
+    case U8X8_MSG_DELAY_10MICRO:
         delayMicroseconds(arg_int * 10);
         break;
 
-    case U8X8_MSG_DELAY_100NANO:        /* 43 */
+    case U8X8_MSG_DELAY_100NANO:
         delayMicroseconds((arg_int + 9) / 10);
         break;
 
-    case U8X8_MSG_DELAY_NANO: {         /* 44 */
+    case U8X8_MSG_DELAY_NANO: {
         uint32_t ns = *(uint32_t *)arg_ptr;
         delayMicroseconds((ns + 999) / 1000);
         break;
     }
 
-    case U8X8_MSG_GPIO_I2C_CLOCK: {     /* 76 */
+    case U8X8_MSG_GPIO_I2C_CLOCK:
         if (arg_int) {
-            /* 释放 SCL: 切输入, 高阻 → 上拉拉到高 */
             GPIO.enable_w1tc.val = (1UL << PIN_SW_I2C_SCL);
         } else {
-            /* 拉低 SCL: 写0 + 切输出 */
             GPIO.out_w1tc.val    = (1UL << PIN_SW_I2C_SCL);
             GPIO.enable_w1ts.val = (1UL << PIN_SW_I2C_SCL);
         }
         break;
-    }
 
-    case U8X8_MSG_GPIO_I2C_DATA: {      /* 77 */
+    case U8X8_MSG_GPIO_I2C_DATA:
         if (arg_int) {
-            /* 释放 SDA: 切输入, 让从机也能拉低 */
             GPIO.enable_w1tc.val = (1UL << PIN_SW_I2C_SDA);
         } else {
-            /* 拉低 SDA */
             GPIO.out_w1tc.val    = (1UL << PIN_SW_I2C_SDA);
             GPIO.enable_w1ts.val = (1UL << PIN_SW_I2C_SDA);
         }
         break;
-    }
 
     default:
         return 0;
@@ -90,7 +97,7 @@ extern "C" uint8_t esp32_fast_sw_i2c_gpio_cb(u8x8_t *u8x8, uint8_t msg,
 }
 
 /* ================================================================
- *  初始化
+ *  initLeftDisplay()
  * ================================================================ */
 bool initLeftDisplay() {
     Serial.print(F("[LEFT]  I2C probe @0x"));
@@ -110,6 +117,9 @@ bool initLeftDisplay() {
     return true;
 }
 
+/* ================================================================
+ *  initRightDisplay()
+ * ================================================================ */
 bool initRightDisplay() {
     Serial.print(F("[RIGHT] SW-I2C begin() (GPIO"));
     Serial.print(PIN_SW_I2C_SDA);
@@ -117,7 +127,6 @@ bool initRightDisplay() {
     Serial.print(PIN_SW_I2C_SCL);
     Serial.print(F("=SCL) ... "));
 
-    /* 替换回调 (begin 之前) */
     u8x8_t *u8x8 = g_rightDisp.getU8x8();
     u8x8->gpio_and_delay_cb = esp32_fast_sw_i2c_gpio_cb;
 
@@ -129,65 +138,174 @@ bool initRightDisplay() {
     return true;
 }
 
+/* ================================================================
+ *  screenBlackOut()
+ * ================================================================ */
 static void screenBlackOut(U8G2* disp) {
     disp->clearBuffer(); disp->sendBuffer();
 }
 
+/* ================================================================
+ *  do_force_return() — 安全归位
+ *
+ *  清空 EventBus → 视线归中 → 舵机归中 → 眼型恢复正常
+ * ================================================================ */
+static void do_force_return(void) {
+    Serial.println(F("[FORCE-RETURN] Triggered!"));
+    event_bus_flush();
+    eye_look_reset(&g_eyeCfg);
+    servo_set_target(SERVO_CENTER_DEG, SERVO_CENTER_DEG);
+    Serial.println(F("[FORCE-RETURN] Done."));
+}
+
+/* ================================================================
+ *  process_event() — 消费单个事件
+ * ================================================================ */
+static void process_event(const EventMsg_t* msg) {
+    switch (msg->type) {
+
+    case EVT_JOYSTICK_MOVE: {
+        /* 更新视线目标 */
+        eye_set_look(&g_eyeCfg, msg->value_x, msg->value_y);
+
+        /* 摇杆 Y 轴 → 眉毛舵机角度
+         *  上推 (Y>0): 眉毛上扬 (角度增大) → 俏皮感
+         *  下推 (Y<0): 眉毛下压 (角度减小)
+         *  映射: Y=[-127,127] → 角度=[75,105] (±15度)
+         */
+        int8_t brow_angle = SERVO_CENTER_DEG + (msg->value_y * 15 / 127);
+        servo_set_target(brow_angle, brow_angle);
+        break;
+    }
+
+    case EVT_BUTTON_SHORT:
+        Serial.println(F("[BTN] Short press (reserved)"));
+        break;
+
+    case EVT_BUTTON_LONG:
+        do_force_return();
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* ================================================================
+ *  render_frame() — 渲染一帧
+ * ================================================================ */
+static void render_frame(void) {
+    uint32_t t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+
+    if (g_leftReady && g_rightReady) {
+        t0 = micros();
+        g_leftDisp.clearBuffer();
+        eye_render(&g_leftDisp, &g_eyeCfg);
+        t1 = micros();
+        g_leftDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y, EYE_TILE_W, EYE_TILE_H);
+        t2 = micros();
+
+        g_rightDisp.clearBuffer();
+        eye_render(&g_rightDisp, &g_eyeCfg);
+        t3 = micros();
+        g_rightDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y, EYE_TILE_W, EYE_TILE_H);
+        t4 = micros();
+    }
+
+    /* 每 2 秒打印一次性能日志 */
+    uint32_t now = millis();
+    if (now - g_last_beat_ms >= 2000) {
+        g_last_beat_ms = now;
+        Serial.print(F("[BEAT] "));
+        if (g_leftReady && g_rightReady) {
+            Serial.print(F("Lren=")); Serial.print(t1 - t0);
+            Serial.print(F("us Lsend=")); Serial.print(t2 - t1);
+            Serial.print(F("us | Rren=")); Serial.print(t3 - t2);
+            Serial.print(F("us Rsend=")); Serial.print(t4 - t3);
+            Serial.print(F("us | "));
+        }
+        Serial.print(F("blink=")); Serial.print(g_blinkState.phase);
+        Serial.print(F(" lid=")); Serial.print(g_eyeCfg.lid, 2);
+        Serial.print(F(" look=(")); Serial.print((int)g_eyeCfg.cur_look_x);
+        Serial.print(F(",")); Serial.print((int)g_eyeCfg.cur_look_y);
+        Serial.println(F(")"));
+    }
+}
+
+/* ================================================================
+ *  setup()
+ * ================================================================ */
 void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes v5 — Parameterized Eye Geometry"));
+    Serial.println(F("  RobotEyes v5.2 — Eye Style Selector"));
     Serial.println(F("========================================"));
     Serial.println();
+
+    /* OLED 初始化 */
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     g_leftReady  = initLeftDisplay();
     Serial.println();
     g_rightReady = initRightDisplay();
     Serial.println();
-    if (g_leftReady)  { Serial.print(F("[BLANK] Left  [OK]")); screenBlackOut(&g_leftDisp); Serial.println(); }
-    if (g_rightReady) { Serial.print(F("[BLANK] Right [OK]")); screenBlackOut(&g_rightDisp); Serial.println(); }
+    if (g_leftReady)  { screenBlackOut(&g_leftDisp); }
+    if (g_rightReady) { screenBlackOut(&g_rightDisp); }
     Serial.println();
+
+    /* EventBus */
+    event_bus_init();
+    Serial.println(F("[EVENT] EventBus init OK"));
+
+    /* Eye 渲染器 */
     eye_config_init(&g_eyeCfg, 64, 32);
     blink_state_init(&g_blinkState);
-    micro_state_init(&g_microState);
+    Serial.println(F("[EYE]   Renderer init OK"));
+
+    /* 舵机 */
+    servo_task_init();
+
+    /* InputTask 初始化 (校准在 task 内部) */
+    input_task_init();
+
+    /* 创建 FreeRTOS Tasks */
+    xTaskCreate(input_task_run,  "InputTask",  2048, NULL, 2, &g_inputTaskHandle);
+    xTaskCreate(servo_task_run,  "ServoTask",  1536, NULL, 2, &g_servoTaskHandle);
+
+    Serial.println(F("[TASK]  InputTask + ServoTask created"));
     Serial.print(F("[SUMMARY] L="));
     Serial.print(g_leftReady ? F("OK") : F("FAIL"));
     Serial.print(F(" R="));
     Serial.print(g_rightReady ? F("OK") : F("FAIL"));
-    Serial.println(F(" GPIO=open-drain"));
+    Serial.println(F(" ready"));
     Serial.println(F("========================================"));
 }
 
+/* ================================================================
+ *  loop() — 唯一消费者
+ * ================================================================ */
 void loop() {
-    static uint32_t lf=0, lb=0, lsu=0, rsu=0, lru=0, rru=0;
-    uint32_t n = millis();
-    if (n - lf < FRAME_INTERVAL_MS) return;
-    lf = n;
-    blink_state_update(&g_blinkState, &g_eyeCfg, n);
-    micro_state_update(&g_microState, &g_eyeCfg, n);
-    eye_morph_update(&g_eyeCfg, n);
-    if (g_leftReady && g_rightReady) {
-        uint32_t t0=micros(), t1, t2, t3, t4;
-        g_leftDisp.clearBuffer(); eye_render(&g_leftDisp, &g_eyeCfg); t1=micros();
-        g_leftDisp.updateDisplayArea(EYE_TILE_X,EYE_TILE_Y,EYE_TILE_W,EYE_TILE_H); t2=micros();
-        g_rightDisp.clearBuffer(); eye_render(&g_rightDisp, &g_eyeCfg); t3=micros();
-        g_rightDisp.updateDisplayArea(EYE_TILE_X,EYE_TILE_Y,EYE_TILE_W,EYE_TILE_H); t4=micros();
-        lru=t1-t0; lsu=t2-t1; rru=t3-t2; rsu=t4-t3;
+    uint32_t now = millis();
+
+    /* ---- 事件消费 ---- */
+    EventMsg_t msg;
+    while (event_bus_pop(&msg, 0)) {
+        process_event(&msg);
     }
-    if (n - lb >= 2000) {
-        lb = n;
-        Serial.print(F("[BEAT] "));
-        if (g_leftReady&&g_rightReady) {
-            Serial.print(F("Lren=")); Serial.print(lru);
-            Serial.print(F("us Lsend=")); Serial.print(lsu);
-            Serial.print(F("us | Rren=")); Serial.print(rru);
-            Serial.print(F("us Rsend=")); Serial.print(rsu);
-            Serial.print(F("us | "));
-        }
-        Serial.print(F("blink=")); Serial.print(g_blinkState.phase);
-        Serial.print(F(" lid=")); Serial.println(g_eyeCfg.lid, 2);
+
+    /* ---- 帧节拍 (33ms ≈ 30fps) ---- */
+    if (now - g_last_frame_ms < FRAME_INTERVAL_MS) {
+        vTaskDelay(1);
+        return;
     }
+    g_last_frame_ms = now;
+
+    /* ---- 状态更新 ---- */
+    eye_look_update(&g_eyeCfg);
+    blink_state_update(&g_blinkState, &g_eyeCfg, now);
+
+    /* ---- 渲染 ---- */
+    render_frame();
 }
 
