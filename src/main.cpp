@@ -1,6 +1,6 @@
 /**
  * @file    main.cpp
- * @brief   RobotEyes 阶段2 v5.1 — 修复: 开漏 I2C (输入模式释放)
+ * @brief   RobotEyes v5 参数化几何眼型引擎 (输入模式释放)
  * @author  Rennick (AI 辅助开发)
  * @date    2026-07-09
  */
@@ -138,7 +138,7 @@ void setup() {
     delay(500);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes v5.1 — Open-Drain SW-I2C Fix"));
+    Serial.println(F("  RobotEyes v5 — Parameterized Eye Geometry"));
     Serial.println(F("========================================"));
     Serial.println();
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
@@ -167,6 +167,7 @@ void loop() {
     lf = n;
     blink_state_update(&g_blinkState, &g_eyeCfg, n);
     micro_state_update(&g_microState, &g_eyeCfg, n);
+    eye_morph_update(&g_eyeCfg, n);
     if (g_leftReady && g_rightReady) {
         uint32_t t0=micros(), t1, t2, t3, t4;
         g_leftDisp.clearBuffer(); eye_render(&g_leftDisp, &g_eyeCfg); t1=micros();
@@ -189,3 +190,4 @@ void loop() {
         Serial.print(F(" lid=")); Serial.println(g_eyeCfg.lid, 2);
     }
 }
+
