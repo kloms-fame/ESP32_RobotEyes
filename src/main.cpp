@@ -166,16 +166,30 @@ static void process_event(const EventMsg_t* msg) {
     switch (msg->type) {
 
     case EVT_JOYSTICK_MOVE: {
-        /* 更新视线目标 */
+        /* 1. 更新视线目标 (绝对运动) */
         eye_set_look(&g_eyeCfg, msg->value_x, msg->value_y);
 
-        /* 摇杆 Y 轴 → 眉毛舵机角度
-         *  上推 (Y>0): 眉毛上扬 (角度增大) → 俏皮感
-         *  下推 (Y<0): 眉毛下压 (角度减小)
-         *  映射: Y=[-127,127] → 角度=[75,105] (±15度)
+        /* 2. 摇杆 Y 轴 → 眉毛相对微调 (在表情基础上叠加)
+         *    上推 (Y>0): 眉毛在当前表情基础上额外上挑 → 俏皮灵动
+         *    下推 (Y<0): 眉毛在当前表情基础上额外下压
+         *    偏移量: Y / 8 → 最大 ±15° 相对偏移
+         *
+         *    镜像舵机: 左 +offset, 右 -offset
+         *    (左舵机 angle↑=上扬, 右舵机 angle↓=上扬)
          */
-        int8_t brow_angle = SERVO_CENTER_DEG + (msg->value_y * 15 / 127);
-        servo_set_target(brow_angle, brow_angle);
+        int8_t brow_offset = msg->value_y / 8;
+
+        if (g_eyeCfg.active_expr < 8) {
+            /* 有活动表情: 在表情基础眉毛上叠加摇杆偏移 */
+            int8_t base_l = EXPRESSIONS[g_eyeCfg.active_expr].brow_left;
+            int8_t base_r = EXPRESSIONS[g_eyeCfg.active_expr].brow_right;
+            servo_set_target(base_l + brow_offset,
+                             base_r - brow_offset);
+        } else {
+            /* 无表情 (默认): 以 90° 为中心 */
+            servo_set_target(SERVO_CENTER_DEG + brow_offset,
+                             SERVO_CENTER_DEG - brow_offset);
+        }
         break;
     }
 

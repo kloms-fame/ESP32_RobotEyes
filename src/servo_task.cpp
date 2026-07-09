@@ -61,6 +61,25 @@ void servo_set_target(int8_t left_deg, int8_t right_deg) {
 }
 
 /* ================================================================
+ *  servo_get_target() — 读取当前目标角度
+ * ================================================================ */
+void servo_get_target(int8_t* left_deg, int8_t* right_deg) {
+    *left_deg  = g_target_left;
+    *right_deg = g_target_right;
+}
+
+/* ================================================================
+ *  servo_add_relative() — 相对当前目标角度偏移
+ *
+ *  用于摇杆微调: 在表情基础角度上叠加用户操作
+ *  内部已有钳位保护 (via servo_set_target)
+ * ================================================================ */
+void servo_add_relative(int8_t left_offset, int8_t right_offset) {
+    servo_set_target(g_target_left + left_offset,
+                     g_target_right + right_offset);
+}
+
+/* ================================================================
  *  servo_task_run() — FreeRTOS Task 主循环
  *
  *  每 20ms 执行一次:
