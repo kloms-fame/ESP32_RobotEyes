@@ -42,6 +42,7 @@ typedef enum {
     PUPIL_NONE,         /* 无瞳孔 (翻白眼) */
     PUPIL_SHOCK,        /* 中空圆环 + 电波线 (震惊) */
     PUPIL_HAPPY,        /* 笑形 >< 眯眼 */
+    PUPIL_STAR,         /* 四角星星 sparkle (兴奋) */
     PUPIL_COUNT          /* 类型总数 (用于分派表) */
 } PupilType_t;
 
@@ -164,6 +165,26 @@ typedef struct {
     /* 泪滴动画 (v7.0) */
     uint32_t tear_phase_ms;        /* 泪滴动画计时器 */
     uint32_t tear_phase2_ms;       /* 第二滴泪相位偏移 */
+
+    /* ---- v8.0 分层动画架构 ---- */
+
+    /* 注意力层: 自主视线漂移 */
+    uint32_t attention_next_ms;    /* 下次注意力移动时刻 */
+    int8_t   attention_target_x;   /* 注意力目标 X */
+    int8_t   attention_target_y;   /* 注意力目标 Y */
+    int8_t   attention_prev_x;     /* 注意力起点 X (用于平滑) */
+    int8_t   attention_prev_y;     /* 注意力起点 Y */
+    uint8_t  attention_phase;      /* 0=idle, 1=moving, 2=holding, 3=returning */
+
+    /* 二级运动: overshoot/decay */
+    float    overdrive_decay;      /* 过冲衰减系数 (0=无) */
+    float    overdrive_amount;     /* 过冲幅度 */
+
+    /* 随机怠速微动作 */
+    uint32_t idle_micro_next_ms;   /* 下次微动作时刻 */
+    uint8_t  idle_micro_type;      /* 0=none, 1=pupil_scale, 2=brow_twitch, 3=lid_flutter */
+    float    idle_micro_lid_delta; /* 眼皮微动幅度 */
+    float    idle_micro_pupil_delta;/* 瞳孔缩放幅度 */
 } EyeConfig_t;
 
 /* ================================================================
@@ -223,5 +244,9 @@ void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index);
 void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms);
 void blink_state_init(BlinkState_t* state);
 void blink_state_update(BlinkState_t* state, EyeConfig_t* cfg, uint32_t now_ms);
+
+/* ---- v8.0 分层动画 API ---- */
+void eye_attention_update(EyeConfig_t* cfg, uint32_t now_ms);
+void eye_idle_micro_update(EyeConfig_t* cfg, uint32_t now_ms);
 
 #endif /* EYE_RENDERER_H */

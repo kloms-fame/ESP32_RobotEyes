@@ -1,6 +1,6 @@
 /**
  * @file    eye_renderer.cpp
- * @brief   RobotEyes 眼型渲染 v7.0 — OCP 解耦管线实现
+ * @brief   RobotEyes 眼型渲染 v8.0 — OCP 解耦管线实现
  * @author  Rennick (AI 辅助开发)
  * @date    2026-07-09
  *
@@ -141,20 +141,61 @@ static void draw_pupil_shock(U8G2* disp, const EyeGeom_t* g) {
 
 static void draw_pupil_happy(U8G2* disp, const EyeGeom_t* g) {
     int16_t cx = g->pupil_cx, cy = g->pupil_cy, r = g->pupil_r;
-    /* 弯弯笑眼 > < : 用两条弧线 */
-    int16_t hr = r * 2 / 3;
-    if (hr < 2) hr = 2;
-    /* 上半弧: > 形状 */
-    for (int16_t dy = -hr; dy <= 0; dy++) {
-        int16_t dx = (int16_t)(r * 0.6f * (float)(dy + hr) / (float)hr);
+    if (r < 2) { draw_pupil_normal(disp, g); return; }
+
+    /* v8.0: 圆润弯月笑眼 ^_^
+     *   上方: 倒 U 弧线 (上眼皮挤压形成的弯弧)
+     *   下方: 浅 U 弧线 (下眼皮上抬形成的笑弧)
+     *   使用 drawCircle 部分弧 + HLine 填充, 避免锯齿 */
+
+    /* 上弧: 在 cy-H 处画一个扁平椭圆的上半部 */
+    int16_t uy = cy - r / 3;
+    int16_t uw = r + 1;
+    /* 用逐行水平线填充形成平滑弧顶 */
+    for (int16_t dy = -r; dy <= 0; dy++) {
+        float norm = (float)(dy + r) / (float)r;  /* 0→1 从上到下 */
+        float curve = 1.0f - norm * norm;          /* 二次曲线 */
+        int16_t dx = (int16_t)((float)uw * curve * 0.55f);
+        if (dx < 1) dx = 1;
         disp->drawHLine(cx - dx, cy + dy, dx * 2);
     }
-    /* 下半弧: 外扩 */
-    int16_t lr = r * 3 / 4;
-    if (lr < 2) lr = 2;
-    for (int16_t dy = 1; dy <= lr; dy++) {
-        int16_t dx = (int16_t)(r * 0.6f * (float)(lr - dy) / (float)lr);
+
+    /* 下弧: 笑弧向上弯曲 (下眼皮抬起) */
+    for (int16_t dy = 1; dy <= r; dy++) {
+        float norm = (float)dy / (float)r;
+        float curve = 1.0f - norm * norm;
+        int16_t dx = (int16_t)((float)uw * curve * 0.45f);
+        if (dx < 1) dx = 1;
         disp->drawHLine(cx - dx, cy + dy, dx * 2);
+    }
+}
+
+static void draw_pupil_star(U8G2* disp, const EyeGeom_t* g) {
+    /* v8.0: 四角星星 sparkle ★
+     *   中心圆 + 四条辐射线 + 旋转的 secondary spokes
+     *   在 128x64 单色屏上半透明效果不可用, 改用几何叠加 */
+    int16_t cx = g->pupil_cx, cy = g->pupil_cy, r = g->pupil_r;
+    if (r < 3) { draw_pupil_normal(disp, g); return; }
+
+    /* 中心圆 (星核) */
+    int16_t cr = r / 3;
+    if (cr < 2) cr = 2;
+    disp->drawDisc(cx, cy, cr, U8G2_DRAW_ALL);
+
+    /* 四条主辐射线 (十字星芒) */
+    int16_t spoke_len = r + 2;
+    disp->drawLine(cx, cy - cr, cx, cy - spoke_len);
+    disp->drawLine(cx, cy + cr, cx, cy + spoke_len);
+    disp->drawLine(cx - cr, cy, cx - spoke_len, cy);
+    disp->drawLine(cx + cr, cy, cx + spoke_len, cy);
+
+    /* 对角辅助线 (45度旋转闪烁) */
+    if ((millis() / 60) % 2 == 0) {
+        int16_t diag = (int16_t)((float)spoke_len * 0.7f);
+        disp->drawLine(cx - cr, cy - cr, cx - diag, cy - diag);
+        disp->drawLine(cx + cr, cy - cr, cx + diag, cy - diag);
+        disp->drawLine(cx - cr, cy + cr, cx - diag, cy + diag);
+        disp->drawLine(cx + cr, cy + cr, cx + diag, cy + diag);
     }
 }
 
@@ -166,6 +207,7 @@ static const PupilDrawFunc s_pupil_draw[PUPIL_COUNT] = {
     [PUPIL_NONE]   = draw_pupil_none,
     [PUPIL_SHOCK]  = draw_pupil_shock,
     [PUPIL_HAPPY]  = draw_pupil_happy,
+    [PUPIL_STAR]   = draw_pupil_star,
 };
 
 /* ================================================================
@@ -373,7 +415,7 @@ void eye_draw_lid_mask(U8G2* disp, const EyeGeom_t* geom) {
 /* ================================================================
  *  eye_draw_tears() — Sad 泪滴特效 (仅在 active_expr==3 时调用)
  *
- *  v7.0: 眼睑边缘坐标映射
+ *  v8.0: 眼睑边缘坐标映射
  *
  *  泪滴从下眼睑边缘滑落, 而非从瞳孔下方固定位置。
  *  坐标计算:
@@ -515,6 +557,19 @@ void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy) {
     cfg->brow_offset_r      = 0;
     cfg->tear_phase_ms      = 0;
     cfg->tear_phase2_ms     = 0;
+    /* v8.0 分层动画初始化 */
+    cfg->attention_next_ms   = millis() + 3000;
+    cfg->attention_target_x  = 0;
+    cfg->attention_target_y  = 0;
+    cfg->attention_prev_x    = 0;
+    cfg->attention_prev_y    = 0;
+    cfg->attention_phase     = 0;
+    cfg->overdrive_decay     = 0.0f;
+    cfg->overdrive_amount    = 0.0f;
+    cfg->idle_micro_next_ms  = millis() + 2000;
+    cfg->idle_micro_type     = 0;
+    cfg->idle_micro_lid_delta = 0.0f;
+    cfg->idle_micro_pupil_delta = 0.0f;
 }
 
 void eye_set_look(EyeConfig_t* cfg, int8_t x, int8_t y) {
@@ -580,22 +635,52 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
         }
     }
 
-    /* Sleepy 锯齿缓动瞌睡引擎 */
+    /* Sleepy 四秒打瞌睡循环 (v8.0 全新节律)
+     *
+     *  Phase 0 (0-2200ms): 缓慢闭眼 0.60→0.95
+     *  Phase 1 (2200-2500ms): 突然惊醒, 弹回 0.20
+     *  Phase 2 (2500-3000ms): 半睁眼微晃, 瞳孔无意识漂移
+     *  Phase 3 (3000-4000ms): 再次犯困 0.20→0.60
+     */
     if (cfg->active_expr == 5) {
         cfg->sleepy_phase_ms += 33;
-        uint32_t cycle = cfg->sleepy_phase_ms % 2500;
+        uint32_t cycle = cfg->sleepy_phase_ms % 4000;
+
         if (cycle < 2200) {
+            /* Phase 0: 缓慢闭眼 */
             float t = (float)cycle / 2200.0f;
-            cfg->sleepy_lid = 0.30f + t * 0.65f;
-        } else {
+            cfg->sleepy_lid = 0.60f + t * 0.35f;
+            /* 瞳孔无意识漂移 */
+            float drift = sin((float)cycle * 0.002f) * 15.0f;
+            cfg->target_look_x = (int8_t)drift;
+            cfg->target_look_y = (int8_t)(cos((float)cycle * 0.003f) * 8.0f);
+        } else if (cycle < 2500) {
+            /* Phase 1: 突然惊醒 */
             float t = (float)(cycle - 2200) / 300.0f;
-            cfg->sleepy_lid = 0.95f - t * 0.65f;
+            float snap = 1.0f - t;
+            cfg->sleepy_lid = 0.95f - snap * 0.75f;
+            cfg->target_look_x = 0;
+            cfg->target_look_y = 0;
+        } else if (cycle < 3000) {
+            /* Phase 2: 半睁眼微晃 */
+            float t = (float)(cycle - 2500) / 500.0f;
+            float wobble = sin(t * M_PI * 2.0f) * 0.08f;
+            cfg->sleepy_lid = 0.20f + wobble;
+            /* 瞳孔缓慢扫视 */
+            cfg->target_look_x = (int8_t)(sin(t * M_PI) * 20.0f);
+            cfg->target_look_y = (int8_t)(cos(t * M_PI * 0.7f) * 6.0f);
+        } else {
+            /* Phase 3: 再次犯困 */
+            float t = (float)(cycle - 3000) / 1000.0f;
+            cfg->sleepy_lid = 0.20f + t * 0.40f;
+            cfg->target_look_x = 0;
+            cfg->target_look_y = 0;
         }
         cfg->target_lid_top = cfg->sleepy_lid;
     }
 
     /* ============================================================
-     *  眉毛动画引擎 v7.0 — 参数驱动, OCP
+     *  眉毛动画引擎 v8.0 — 参数驱动, OCP
      *
      *  通过 ExpressionDef_t.brow_anim 分派动画类型,
      *  所有参数从表情表读取 (brow_freq / brow_amp / brow_asymmetry),
@@ -690,6 +775,34 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
             break;
         }
 
+        case BROW_ANIM_TWITCH: {
+            /* v8.0: 随机单侧抽动
+             *   每 800-2000ms 触发一次, 单侧眉毛快速抽动 10-15deg
+             *   持续 80ms, 然后回落
+             *   模拟真实人类无意识的单侧挑眉毛动作
+             */
+            uint32_t twitch_cycle = (uint32_t)(cfg->brow_anim_phase * 1000.0f);
+            uint32_t interval = 1200 + (twitch_cycle * 7 % 800);
+            uint32_t pos = twitch_cycle % interval;
+
+            if (pos < 40) {
+                /* 上升沿 */
+                float t = (float)pos / 40.0f;
+                off_l = amp * t;
+                off_r = 0.0f;
+            } else if (pos < 80) {
+                /* 下降沿 */
+                float t = (float)(pos - 40) / 40.0f;
+                off_l = amp * (1.0f - t);
+                off_r = 0.0f;
+            } else {
+                off_l = 0.0f;
+                off_r = 0.0f;
+            }
+            cfg->brow_anim_phase += freq;
+            break;
+        }
+
         case BROW_ANIM_NONE:
         default:
             cfg->brow_anim_phase += freq;
@@ -710,6 +823,110 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
     cfg->cur_lid_slope  += (cfg->target_lid_slope  - cfg->cur_lid_slope)  * 0.18f;
     cfg->cur_pupil_scale += (cfg->target_pupil_scale - cfg->cur_pupil_scale) * 0.18f;
     cfg->cur_pupil_type  = cfg->target_pupil_type;
+}
+
+/* ================================================================
+ *  v8.0 分层动画引擎
+ * ================================================================ */
+
+/* ---- 注意力层: 自主视线漂移 ---- */
+void eye_attention_update(EyeConfig_t* cfg, uint32_t now_ms) {
+    /* 仅在 Normal 表情下启用 (非表情状态) */
+    if (cfg->active_expr != 0 && cfg->active_expr != 255) return;
+    if (cfg->lid > 0.1f) return;  /* 眨眼时不移动 */
+
+    if (cfg->attention_phase == 0) {
+        /* 等待下次移动 */
+        if (now_ms >= cfg->attention_next_ms) {
+            /* 选中随机方向 */
+            cfg->attention_prev_x = cfg->target_look_x;
+            cfg->attention_prev_y = cfg->target_look_y;
+            cfg->attention_target_x = (int8_t)((rand() % 61) - 30);  /* -30..+30 */
+            cfg->attention_target_y = (int8_t)((rand() % 41) - 20);  /* -20..+20 */
+            cfg->attention_phase = 1;
+        }
+    } else if (cfg->attention_phase == 1) {
+        /* 平滑移向目标 */
+        float t = 0.05f;  /* 缓慢移动 */
+        float dx = (float)(cfg->attention_target_x - cfg->target_look_x) * t;
+        float dy = (float)(cfg->attention_target_y - cfg->target_look_y) * t;
+        cfg->target_look_x += (int8_t)dx;
+        cfg->target_look_y += (int8_t)dy;
+
+        if (abs(cfg->attention_target_x - cfg->target_look_x) <= 1 &&
+            abs(cfg->attention_target_y - cfg->target_look_y) <= 1) {
+            cfg->attention_phase = 2;
+            cfg->attention_next_ms = now_ms + 800 + (rand() % 1500);  /* 停留 0.8-2.3s */
+        }
+    } else if (cfg->attention_phase == 2) {
+        /* 停留 */
+        if (now_ms >= cfg->attention_next_ms) {
+            cfg->attention_phase = 3;
+        }
+    } else {
+        /* 回归中心 */
+        float t = 0.03f;
+        cfg->target_look_x += (int8_t)((float)(-cfg->target_look_x) * t);
+        cfg->target_look_y += (int8_t)((float)(-cfg->target_look_y) * t);
+
+        if (abs(cfg->target_look_x) <= 1 && abs(cfg->target_look_y) <= 1) {
+            cfg->target_look_x = 0;
+            cfg->target_look_y = 0;
+            cfg->attention_phase = 0;
+            cfg->attention_next_ms = now_ms + 2000 + (rand() % 4000);  /* 间隔 2-6s */
+        }
+    }
+}
+
+/* ---- 随机怠速微动作 ---- */
+void eye_idle_micro_update(EyeConfig_t* cfg, uint32_t now_ms) {
+    if (cfg->lid > 0.2f) return;  /* 眨眼时不触发 */
+
+    if (cfg->idle_micro_type == 0) {
+        /* 等待下次微动作 */
+        if (now_ms >= cfg->idle_micro_next_ms) {
+            uint8_t r = rand() % 6;
+            if (r == 0) {
+                /* 瞳孔缩放 ±5% */
+                cfg->idle_micro_type = 1;
+                cfg->idle_micro_pupil_delta = (rand() % 2) ? 0.05f : -0.05f;
+            } else if (r == 1) {
+                /* 单侧眉毛轻挑 (通过 brow_offset 临时叠加) */
+                cfg->idle_micro_type = 2;
+            } else if (r == 2) {
+                /* 眼皮微颤 */
+                cfg->idle_micro_type = 3;
+                cfg->idle_micro_lid_delta = 0.04f;
+            } else {
+                /* 什么都不做, 等下次 */
+                cfg->idle_micro_next_ms = now_ms + 1500 + (rand() % 3000);
+            }
+        }
+    } else {
+        /* 执行中的微动作 */
+        uint32_t elapsed = now_ms - (cfg->idle_micro_next_ms - 500);
+        if (elapsed > 120) {
+            /* 动作结束, 恢复 */
+            if (cfg->idle_micro_type == 1) {
+                cfg->target_pupil_scale -= cfg->idle_micro_pupil_delta;
+                cfg->idle_micro_pupil_delta = 0.0f;
+            } else if (cfg->idle_micro_type == 3) {
+                cfg->target_lid_top -= cfg->idle_micro_lid_delta;
+                cfg->idle_micro_lid_delta = 0.0f;
+            }
+            cfg->idle_micro_type = 0;
+            cfg->idle_micro_next_ms = now_ms + 2000 + (rand() % 4000);
+        } else {
+            /* 动作进行中 */
+            if (cfg->idle_micro_type == 1) {
+                cfg->target_pupil_scale += cfg->idle_micro_pupil_delta * 0.05f;
+            } else if (cfg->idle_micro_type == 2 && elapsed < 60) {
+                cfg->brow_offset_l = (int8_t)((rand() % 5) - 2);
+            } else if (cfg->idle_micro_type == 3) {
+                cfg->target_lid_top += cfg->idle_micro_lid_delta * 0.1f;
+            }
+        }
+    }
 }
 
 void blink_state_init(BlinkState_t* state) {

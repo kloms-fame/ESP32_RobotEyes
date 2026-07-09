@@ -1,8 +1,8 @@
 /**
  * @file    expressions.h
- * @brief   RobotEyes 8 大灵魂微表情 v7.0 — 参数化眉毛动画引擎 + 泪滴坐标映射
+ * @brief   RobotEyes 8 大灵魂微表情 v8.0 — 参数化眉毛动画引擎 + 泪滴坐标映射
  *
- *  v7.0 关键升级:
+ *  v8.0 关键升级:
  *    - BrowAnimation_t: 6 种眉毛动画类型 (参数化, OCP)
  *    - ExpressionDef_t 扩展: brow_anim / brow_freq / brow_amp 等动画参数
  *    - Angry 高频震颤: sin() 载波 + 周期性爆发 burst
@@ -26,12 +26,13 @@ typedef enum {
     BROW_ANIM_SOB,          /* 抽泣波 + 左右错相 (悲伤) */
     BROW_ANIM_RAISE_BOUNCE, /* 上扬弹跳 (开心/惊讶: 峰值后回弹) */
     BROW_ANIM_SAG_DRIFT,    /* 无力下垂 + 微漂移 (困倦) */
+    BROW_ANIM_TWITCH,       /* 随机单侧抽动 (怠速微动作) */
 } BrowAnimation_t;
 
 /* ================================================================
  *  ExpressionDef_t — 表情定义 (参数化眉毛动画)
  *
- *  新增字段 (v7.0):
+ *  新增字段 (v8.0):
  *    brow_anim        动画类型 (BrowAnimation_t)
  *    brow_freq        基频 (弧度/帧, 典型 0.02~0.20)
  *    brow_amp         振幅 (度, 典型 1~8)
@@ -62,7 +63,7 @@ typedef struct {
     int8_t          brow_left;      /* 左眉基础角度 */
     int8_t          brow_right;     /* 右眉基础角度 */
 
-    /* ---- 眉毛动画参数 (v7.0) ---- */
+    /* ---- 眉毛动画参数 (v8.0) ---- */
     BrowAnimation_t brow_anim;          /* 动画类型 */
     float           brow_freq;          /* 基频 (弧度/帧) */
     float           brow_amp;           /* 振幅 (度) */
@@ -70,7 +71,7 @@ typedef struct {
     float           brow_burst_amp;     /* 爆发振幅 (TREMBLE) */
     uint16_t        brow_burst_intv;    /* 爆发间隔 ms (TREMBLE) */
 
-    /* ---- 泪滴参数 (v7.0) ---- */
+    /* ---- 泪滴参数 (v8.0) ---- */
     bool            tear_enabled;       /* 启用泪滴 */
     float           tear_rate;          /* 滑落速率 (px/ms) */
     uint8_t         tear_spacing;       /* 双泪滴初始间距 (px) */
@@ -89,91 +90,68 @@ typedef struct {
  * ================================================================ */
 static const ExpressionDef_t EXPRESSIONS[8] = {
 
-    /* [0] Normal — 平静注视
-     *   瞳孔: 标准圆, 眉毛: sin 慢呼吸 ±2deg */
+    /* [0] Normal — 自然灵动, 微呼吸 + 注意力漂移 */
     { "Normal",
       0.0f, 0.0f, 0.0f,  0.0f, 0.0f,
       PUPIL_NORMAL, 1.0f,  0.0f, 0,
       SYM_L(0), SYM_R(0),
-      BROW_ANIM_BREATHE, 0.02f, 2.0f, 0.0f, 0.0f, 0,
+      BROW_ANIM_BREATHE, 0.018f, 2.5f, 0.25f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [1] Happy — 极致开心 > <
-     *   瞳孔: PUPIL_HAPPY 笑眼弯弯, 弹跳 1.2x→1.8x
-     *   眉毛: 上扬弹跳 30° → 回弹至 +10° */
+    /* [1] Happy — 极致开心 弯月笑眼 + 弹跳眉毛 */
     { "Happy",
-      0.0f, 0.0f, 0.0f,  0.65f, 0.15f,
-      PUPIL_HAPPY, 1.2f,  1.8f, 300,
-      SYM_L(30), SYM_R(30),
-      BROW_ANIM_RAISE_BOUNCE, 0.03f, 6.0f, 0.0f, 0.0f, 0,
+      0.22f, 0.0f, 0.0f,  0.85f, 0.25f,
+      PUPIL_HAPPY, 1.15f,  2.5f, 400,
+      SYM_L(45), SYM_R(45),
+      BROW_ANIM_RAISE_BOUNCE, 0.05f, 12.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [2] Angry — 极致凶狠 ◣◢
-     *   瞳孔: PUPIL_SLIT 竖缝, 缩放 0.6x→0.35x
-     *   眉毛: BROW_ANIM_TREMBLE 高频震颤
-     *     sin 载波 f=0.15rad/帧 (~2.4Hz), ±3deg 基础颤
-     *     每 800ms 爆发一次 burst: 正弦包络, ±8deg 尖峰
-     *     左右眉反相 (asymmetry=0.5) → 交替颤抖 */
+    /* [2] Angry — 极致凶狠 吊梢眼 + 抽动式震颤 */
     { "Angry",
-      0.28f, 0.0f, 0.0f,  0.18f, 0.90f,
-      PUPIL_SLIT, 0.6f,  0.35f, 200,
-      SYM_L(-40), SYM_R(-40),
-      BROW_ANIM_TREMBLE, 0.15f, 3.0f, 0.5f, 8.0f, 800,
+      0.35f, 0.0f, 0.0f,  0.12f, 1.15f,
+      PUPIL_SLIT, 0.55f,  0.30f, 250,
+      SYM_L(-45), SYM_R(-45),
+      BROW_ANIM_TREMBLE, 0.18f, 3.5f, 0.6f, 10.0f, 600,
       false, 0.0f, 0 },
 
-    /* [3] Sad — 汪洋泪海 T_T
-     *   瞳孔: PUPIL_NORMAL, 1.4x→1.8x 泪眼朦胧
-     *   眉毛: BROW_ANIM_SOB 抽泣波
-     *     sin 基频 0.014rad/帧 (~0.22Hz 慢抽泣)
-     *     左右交错: 左眉 sin(phase), 右眉 sin(phase+2.0)
-     *   泪滴: tear_enabled=true, 双泪滴错落滑落
-     *     速率 0.010 px/ms, 间距 12px */
+    /* [3] Sad — 汪洋泪海 T_T 多层泪水 */
     { "Sad",
-      0.18f, 0.0f, 0.0f,  0.28f, -0.65f,
-      PUPIL_NORMAL, 1.4f,  1.8f, 450,
-      SYM_L(20), SYM_R(20),
-      BROW_ANIM_SOB, 0.014f, 2.5f, 1.0f, 0.0f, 0,
-      true, 0.010f, 12 },
+      0.15f, 0.0f, 0.0f,  0.32f, -0.75f,
+      PUPIL_NORMAL, 1.5f,  2.2f, 500,
+      SYM_L(25), SYM_R(25),
+      BROW_ANIM_SOB, 0.010f, 3.0f, 1.2f, 0.0f, 0,
+      true, 0.012f, 16 },
 
-    /* [4] Surprised — 中空瞳孔地震 !!
-     *   瞳孔: PUPIL_SHOCK 中空圆环 + 八向电波
-     *   眉毛: 上扬弹跳 50° → 回弹至 +25° */
+    /* [4] Surprised — 五阶段震惊 O_O */
     { "Surprised",
-      0.0f, 0.0f, 0.0f,  -0.10f, 0.0f,
-      PUPIL_SHOCK, 1.0f,  0.3f, 300,
-      SYM_L(50), SYM_R(50),
-      BROW_ANIM_RAISE_BOUNCE, 0.04f, 8.0f, 0.0f, 0.0f, 0,
+      0.0f, 0.0f, 0.0f,  -0.12f, 0.0f,
+      PUPIL_SHOCK, 1.0f,  0.25f, 350,
+      SYM_L(55), SYM_R(55),
+      BROW_ANIM_RAISE_BOUNCE, 0.06f, 14.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [5] Sleepy — 锯齿缓动瞌睡
-     *   瞳孔: PUPIL_NORMAL, 缩放 0.7x
-     *   眉毛: BROW_ANIM_SAG_DRIFT 无力下垂 + 漂移 */
+    /* [5] Sleepy — 四秒打瞌睡循环 */
     { "Sleepy",
-      0.60f, 0.0f, 0.0f,  0.06f, 0.0f,
-      PUPIL_NORMAL, 0.7f,  0.0f, 0,
-      SYM_L(-12), SYM_R(-12),
-      BROW_ANIM_SAG_DRIFT, 0.01f, 3.0f, 0.3f, 0.0f, 0,
+      0.60f, 0.0f, 0.0f,  0.05f, 0.0f,
+      PUPIL_NORMAL, 0.65f,  0.0f, 0,
+      SYM_L(-15), SYM_R(-15),
+      BROW_ANIM_SAG_DRIFT, 0.006f, 4.0f, 0.4f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [6] Skeptic — 极致大小眼
-     *   瞳孔: PUPIL_NORMAL 缩放 0.65x
-     *   眉毛: 静态非对称 (左 35°高挑, 右 -20°微垂)
-     *   动画: BROW_ANIM_BREATHE 微弱呼吸叠加 */
+    /* [6] Skeptic — 极致大小眼 + 异步眉毛 */
     { "Skeptic",
-      0.0f, 0.0f, 0.75f,  0.25f, 0.15f,
-      PUPIL_NORMAL, 0.65f,  0.5f, 250,
-      SYM_L(35), SYM_R(-20),
-      BROW_ANIM_BREATHE, 0.015f, 1.0f, 0.8f, 0.0f, 0,
+      0.0f, 0.0f, 0.82f,  0.30f, 0.22f,
+      PUPIL_NORMAL, 0.55f,  0.70f, 300,
+      SYM_L(40), SYM_R(-25),
+      BROW_ANIM_BREATHE, 0.012f, 1.5f, 0.9f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [7] Excited — 完美跃动爱心
-     *   瞳孔: PUPIL_HEART, 弹跳 1.3x→2.5x
-     *   眉毛: 上扬弹跳 35° */
+    /* [7] Excited — 星星眼 高频跃动 */
     { "Excited",
       0.0f, 0.0f, 0.0f,  0.0f, 0.0f,
-      PUPIL_HEART, 1.3f,  2.5f, 450,
-      SYM_L(35), SYM_R(35),
-      BROW_ANIM_RAISE_BOUNCE, 0.05f, 5.0f, 0.0f, 0.0f, 0,
+      PUPIL_STAR, 1.2f,  2.8f, 500,
+      SYM_L(40), SYM_R(40),
+      BROW_ANIM_RAISE_BOUNCE, 0.07f, 8.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 };
 

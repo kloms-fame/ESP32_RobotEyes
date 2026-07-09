@@ -46,6 +46,10 @@ static uint32_t g_last_frame_ms = 0;
 /* ---- 调试日志节拍 ---- */
 static uint32_t g_last_beat_ms  = 0;
 
+/* ---- 摇杆眉毛偏移 (每帧叠加) ---- */
+static int8_t g_joy_brow_offset_l = 0;
+static int8_t g_joy_brow_offset_r = 0;
+
 /* ================================================================
  *  esp32_fast_sw_i2c_gpio_cb() v5.1 — 标准开漏 I2C
  * ================================================================ */
@@ -158,6 +162,8 @@ static void do_force_return(void) {
     Serial.println(F("[FORCE-RETURN] Triggered!"));
     event_bus_flush();
     eye_look_reset(&g_eyeCfg);
+    g_joy_brow_offset_l = 0;
+    g_joy_brow_offset_r = 0;
     servo_set_target(SERVO_CENTER_DEG, SERVO_CENTER_DEG);
     Serial.println(F("[FORCE-RETURN] Done."));
 }
@@ -172,26 +178,10 @@ static void process_event(const EventMsg_t* msg) {
         /* 1. 更新视线目标 (绝对运动) */
         eye_set_look(&g_eyeCfg, msg->value_x, msg->value_y);
 
-        /* 2. 摇杆 Y 轴 → 眉毛相对微调 (在表情基础上叠加)
-         *    上推 (Y>0): 眉毛在当前表情基础上额外上挑 → 俏皮灵动
-         *    下推 (Y<0): 眉毛在当前表情基础上额外下压
-         *    偏移量: Y / 8 → 最大 ±15° 相对偏移
-         *
-         *    镜像舵机: 左 +offset, 右 -offset
-         *    (左舵机 angle↑=上扬, 右舵机 angle↓=上扬)
-         */
+        /* 2. 保存摇杆眉毛偏移 (每帧同步, 不再直接设舵机) */
         int8_t brow_offset = msg->value_y / 8;
-
-        /* v6.2: 摇杆偏移 + 眉毛微动引擎叠加 */
-        if (g_eyeCfg.active_expr < 8) {
-            int8_t base_l = EXPRESSIONS[g_eyeCfg.active_expr].brow_left;
-            int8_t base_r = EXPRESSIONS[g_eyeCfg.active_expr].brow_right;
-            servo_set_target(base_l - brow_offset + g_eyeCfg.brow_offset_l,
-                             base_r + brow_offset + g_eyeCfg.brow_offset_r);
-        } else {
-            servo_set_target(SERVO_CENTER_DEG - brow_offset + g_eyeCfg.brow_offset_l,
-                             SERVO_CENTER_DEG + brow_offset + g_eyeCfg.brow_offset_r);
-        }
+        g_joy_brow_offset_l = -brow_offset;
+        g_joy_brow_offset_r =  brow_offset;
         break;
     }
 
@@ -309,7 +299,7 @@ void setup() {
     delay(500);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes v6.2 — Brow Engine + Happy/Shock/Tear/Sawtooth"));
+    Serial.println(F("  RobotEyes v8.0 — Brow Engine + Happy/Shock/Tear/Sawtooth"));
     Serial.println(F("========================================"));
     Serial.println();
 
@@ -374,6 +364,8 @@ void loop() {
     if (g_revert_deadline_ms > 0 && now >= g_revert_deadline_ms) {
         g_revert_deadline_ms = 0;
         if (g_eyeCfg.active_expr != 0) {
+            g_joy_brow_offset_l = 0;
+            g_joy_brow_offset_r = 0;
             eye_set_expression(&g_eyeCfg, 0);  /* 回归 Normal */
             servo_set_target(SYM_L(0), SYM_R(0));
             Serial.println(F("[EXPR] Auto-revert → Normal"));
@@ -384,6 +376,25 @@ void loop() {
     eye_look_update(&g_eyeCfg);
     eye_expr_update(&g_eyeCfg, now);
     blink_state_update(&g_blinkState, &g_eyeCfg, now);
+
+    /* ---- v8.0 分层动画 ---- */
+    eye_attention_update(&g_eyeCfg, now);
+    eye_idle_micro_update(&g_eyeCfg, now);
+
+    /* ---- 眉毛动画 + 摇杆偏移 → 每帧同步舵机 (v8.0 核心修复) ---- */
+    if (g_eyeCfg.active_expr < 8) {
+        int8_t base_l = EXPRESSIONS[g_eyeCfg.active_expr].brow_left;
+        int8_t base_r = EXPRESSIONS[g_eyeCfg.active_expr].brow_right;
+        servo_set_target(
+            base_l + g_joy_brow_offset_l + g_eyeCfg.brow_offset_l,
+            base_r + g_joy_brow_offset_r + g_eyeCfg.brow_offset_r
+        );
+    } else {
+        servo_set_target(
+            SERVO_CENTER_DEG + g_joy_brow_offset_l + g_eyeCfg.brow_offset_l,
+            SERVO_CENTER_DEG + g_joy_brow_offset_r + g_eyeCfg.brow_offset_r
+        );
+    }
 
     /* ---- 渲染 ---- */
     render_frame();
