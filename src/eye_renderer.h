@@ -21,6 +21,16 @@
 #endif
 
 /* ================================================================
+ *  瞳孔变异类型 (v6.0)
+ * ================================================================ */
+typedef enum {
+    PUPIL_NORMAL = 0,   /* 标准圆形瞳孔 */
+    PUPIL_HEART,        /* 爱心瞳孔 ♥ (期待/狂喜) */
+    PUPIL_SLIT,         /* 竖缝瞳孔 | (极度愤怒/野兽模式) */
+    PUPIL_NONE          /* 无瞳孔 (震惊/翻白眼) */
+} PupilType_t;
+
+/* ================================================================
  *  通用
  * ================================================================ */
 #define EYE_CX            64
@@ -123,17 +133,21 @@ typedef struct {
     int8_t  target_look_x, target_look_y;
     float   cur_look_x, cur_look_y;
 
-    /* ---- 表情参数 (v5.6) ---- */
-    uint8_t active_expr;       /* 当前表情索引 (0-7), 255=未设置 */
-    float   target_lid_top;    /* 上眼皮目标 */
-    float   target_lid_bottom; /* 下眼皮目标 */
-    float   target_pupil_scale;/* 瞳孔缩放目标 */
+    /* ---- 表情参数 (v6.0) ---- */
+    uint8_t      active_expr;        /* 当前表情索引 (0-7), 255=未设置 */
+    float        target_lid_top;     /* 上眼皮目标 */
+    float        target_lid_bottom;  /* 下眼皮目标 */
+    float        target_lid_slope;   /* 眼皮倾斜度 (-1.0 ~ 1.0) */
+    float        target_pupil_scale; /* 瞳孔缩放目标 */
+    PupilType_t  target_pupil_type;  /* 瞳孔形状目标 */
+    PupilType_t  cur_pupil_type;     /* 瞳孔当前形状 */
 
     float   cur_lid_top;       /* 上眼皮当前值 (lerp) */
     float   cur_lid_bottom;    /* 下眼皮当前值 (lerp) */
+    float   cur_lid_slope;     /* 倾斜度当前值 (lerp) */
     float   cur_pupil_scale;   /* 瞳孔缩放当前值 (lerp) */
 
-    /* ---- 特殊动画 (v5.6) ---- */
+    /* ---- 特殊动画 (v6.0) ---- */
     float    anim_peak_scale;  /* 动画峰值瞳孔 */
     uint32_t anim_start_ms;    /* 动画开始时间 */
     uint16_t anim_duration_ms; /* 动画持续时间 */
@@ -164,6 +178,6 @@ void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index);
 void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms);
 void blink_state_init(BlinkState_t* state);
 void blink_state_update(BlinkState_t* state, EyeConfig_t* cfg, uint32_t now_ms);
-void eye_render(U8G2* disp, EyeConfig_t* cfg);
+void eye_render(U8G2* disp, EyeConfig_t* cfg, bool is_left);
 
 #endif

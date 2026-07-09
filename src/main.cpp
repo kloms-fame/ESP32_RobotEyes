@@ -37,6 +37,9 @@ bool g_rightReady = false;
 static EyeConfig_t  g_eyeCfg;
 static BlinkState_t g_blinkState;
 
+/* ---- 自动回弹计时器 (短按后 1.5s 回归 Normal) ---- */
+static uint32_t g_revert_deadline_ms = 0;  /* 0=不自动回弹 */
+
 /* ---- 帧节拍 ---- */
 static uint32_t g_last_frame_ms = 0;
 
@@ -213,6 +216,25 @@ static void process_event(const EventMsg_t* msg) {
         break;
     }
 
+    case EVT_EXPR_RELEASE: {
+        /* 按键释放: 根据持有时长决定短按/长按
+         *   msg->value_y = 持有时长 (ms)
+         *   短按 (<500ms): 启动 1.5s 自动回弹到 Normal
+         *   长按 (≥500ms): 维持表情不弹回
+         */
+        uint16_t held_ms = (uint8_t)msg->value_y;
+        if (held_ms < ADC_LONG_PRESS_MS) {
+            /* 短按: 1.5s 后自动回弹 */
+            g_revert_deadline_ms = millis() + 1500;
+            Serial.println(F("[EXPR] Short press — will auto-revert in 1.5s"));
+        } else {
+            /* 长按: 锁定表情 */
+            g_revert_deadline_ms = 0;
+            Serial.println(F("[EXPR] Long press — expression locked"));
+        }
+        break;
+    }
+
     case EVT_BUTTON_SHORT:
         Serial.println(F("[BTN] Short press (reserved)"));
         break;
@@ -235,13 +257,13 @@ static void render_frame(void) {
     if (g_leftReady && g_rightReady) {
         t0 = micros();
         g_leftDisp.clearBuffer();
-        eye_render(&g_leftDisp, &g_eyeCfg);
+        eye_render(&g_leftDisp, &g_eyeCfg, true);   /* 左眼 */
         t1 = micros();
         g_leftDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y, EYE_TILE_W, EYE_TILE_H);
         t2 = micros();
 
         g_rightDisp.clearBuffer();
-        eye_render(&g_rightDisp, &g_eyeCfg);
+        eye_render(&g_rightDisp, &g_eyeCfg, false);  /* 右眼 */
         t3 = micros();
         g_rightDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y, EYE_TILE_W, EYE_TILE_H);
         t4 = micros();
@@ -275,7 +297,7 @@ void setup() {
     delay(500);
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes v5.6 — Expression Switch"));
+    Serial.println(F("  RobotEyes v6.0 — Morphing Pupil & Angled Mask"));
     Serial.println(F("========================================"));
     Serial.println();
 
@@ -335,6 +357,16 @@ void loop() {
         return;
     }
     g_last_frame_ms = now;
+
+    /* ---- 自动回弹: 短按后 1.5s 回归 Normal ---- */
+    if (g_revert_deadline_ms > 0 && now >= g_revert_deadline_ms) {
+        g_revert_deadline_ms = 0;
+        if (g_eyeCfg.active_expr != 0) {
+            eye_set_expression(&g_eyeCfg, 0);  /* 回归 Normal */
+            servo_set_target(SYM_L(0), SYM_R(0));
+            Serial.println(F("[EXPR] Auto-revert → Normal"));
+        }
+    }
 
     /* ---- 状态更新 ---- */
     eye_look_update(&g_eyeCfg);

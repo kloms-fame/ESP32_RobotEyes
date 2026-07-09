@@ -1,6 +1,6 @@
 /**
  * @file    eye_renderer.cpp
- * @brief   RobotEyes 眼型渲染 v5.6 — 表情切换 + lerp过渡
+ * @brief   RobotEyes 眼型渲染 v6.0 — 瞳孔变异 + 倾斜遮罩 + 爱心/竖瞳
  * @author  Rennick (AI 辅助开发)
  * @date    2026-07-09
  */
@@ -19,16 +19,20 @@ void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy) {
     cfg->cur_look_x = 0.0f; cfg->cur_look_y = 0.0f;
 
     /* 表情字段初始化 */
-    cfg->active_expr       = 255;
-    cfg->target_lid_top    = 0.0f;
-    cfg->target_lid_bottom = 0.0f;
+    cfg->active_expr        = 255;
+    cfg->target_lid_top     = 0.0f;
+    cfg->target_lid_bottom  = 0.0f;
+    cfg->target_lid_slope   = 0.0f;
     cfg->target_pupil_scale = 1.0f;
-    cfg->cur_lid_top       = 0.0f;
-    cfg->cur_lid_bottom    = 0.0f;
-    cfg->cur_pupil_scale   = 1.0f;
-    cfg->anim_peak_scale   = 0.0f;
-    cfg->anim_start_ms     = 0;
-    cfg->anim_duration_ms  = 0;
+    cfg->target_pupil_type  = PUPIL_NORMAL;
+    cfg->cur_pupil_type     = PUPIL_NORMAL;
+    cfg->cur_lid_top        = 0.0f;
+    cfg->cur_lid_bottom     = 0.0f;
+    cfg->cur_lid_slope      = 0.0f;
+    cfg->cur_pupil_scale    = 1.0f;
+    cfg->anim_peak_scale    = 0.0f;
+    cfg->anim_start_ms      = 0;
+    cfg->anim_duration_ms   = 0;
 }
 
 void eye_set_look(EyeConfig_t* cfg, int8_t x, int8_t y) {
@@ -59,11 +63,13 @@ void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index) {
     cfg->active_expr = expr_index;
 
     /* 设置眼型目标值 (由 eye_expr_update lerp 过渡) */
-    cfg->target_lid_top    = expr->lid_top;
-    cfg->target_lid_bottom = expr->lid_bottom;
+    cfg->target_lid_top     = expr->lid_top;
+    cfg->target_lid_bottom  = expr->lid_bottom;
+    cfg->target_lid_slope   = expr->lid_slope;
+    cfg->target_pupil_type  = expr->pupil_type;
 
     /* 特殊动画: 先跳到峰值, 再回落到目标值 */
-    if (expr->anim_peak > 0.0f) {
+    if (expr->anim_peak > 0.001f || expr->anim_peak < -0.001f) {
         cfg->target_pupil_scale = expr->anim_peak;
         cfg->anim_peak_scale    = expr->anim_peak;
         cfg->anim_start_ms      = millis();
@@ -85,7 +91,7 @@ void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index) {
  * ================================================================ */
 void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
     /* 瞳孔特殊动画: 峰值到期后回落到持续值 */
-    if (cfg->anim_peak_scale > 0.0f) {
+    if (cfg->anim_peak_scale > 0.001f || cfg->anim_peak_scale < -0.001f) {
         uint32_t elapsed = now_ms - cfg->anim_start_ms;
         if (elapsed >= cfg->anim_duration_ms) {
             /* 动画结束, 回落到表情定义的持续值 */
@@ -96,10 +102,14 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
         }
     }
 
-    /* lerp: 眼型参数 + 瞳孔缩放 */
-    cfg->cur_lid_top    += (cfg->target_lid_top    - cfg->cur_lid_top)    * LOOK_SMOOTH_FACTOR;
-    cfg->cur_lid_bottom += (cfg->target_lid_bottom - cfg->cur_lid_bottom) * LOOK_SMOOTH_FACTOR;
+    /* lerp: 眼型参数 + 瞳孔缩放 + 倾斜度 */
+    cfg->cur_lid_top     += (cfg->target_lid_top     - cfg->cur_lid_top)     * LOOK_SMOOTH_FACTOR;
+    cfg->cur_lid_bottom  += (cfg->target_lid_bottom  - cfg->cur_lid_bottom)  * LOOK_SMOOTH_FACTOR;
+    cfg->cur_lid_slope   += (cfg->target_lid_slope   - cfg->cur_lid_slope)   * LOOK_SMOOTH_FACTOR;
     cfg->cur_pupil_scale += (cfg->target_pupil_scale - cfg->cur_pupil_scale) * LOOK_SMOOTH_FACTOR;
+
+    /* 瞳孔类型: 立即切换 (不需要 lerp, 形状变化本身就是视觉过渡) */
+    cfg->cur_pupil_type = cfg->target_pupil_type;
 }
 
 void blink_state_init(BlinkState_t* state) {
@@ -152,20 +162,18 @@ static inline int16_t clamp_i16(int16_t v, int16_t lo, int16_t hi) {
 }
 
 /* ================================================================
- *  eye_render() — v5.6 表情切换 + 眨眼遮罩
+ *  eye_render() — v6.0 瞳孔变异 + 倾斜遮罩
+ *
+ *  is_left: true=左眼, false=右眼 (决定倾斜遮罩方向)
  *
  *  管线:
  *    1. 白色眼型
- *    2. 瞳孔 (限位在眼眶内, 大小受 pupil_scale 控制)
- *    3. 高光 (限位在眼眶内, 视差晃动)
- *    4. 表情眼皮遮罩 (lid_top / lid_bottom)
- *    5. 眨眼遮罩 (覆盖在表情眼皮之上)
- *
- *  眼皮优先级: 眨眼(lid) > 表情眼皮
- *    - 眨眼进行中: lid_top = lid, lid_bottom = lid*0.5
- *    - 否则: 使用表情的 lid_top / lid_bottom
+ *    2. 瞳孔 (多态: Normal/Heart/Slit/None + 运行时缩放)
+ *    3. 高光 (爱心眼时禁用主高光, 防遮挡)
+ *    4. 三角倾斜遮罩 (◣_◢ 怒火 / T_T 委屈)
+ *    5. 平行遮罩 (表情 lid_top/bottom + 眨眼覆盖)
  * ================================================================ */
-void eye_render(U8G2* disp, EyeConfig_t* cfg) {
+void eye_render(U8G2* disp, EyeConfig_t* cfg, bool is_left) {
     int16_t hw = EYE_W / 2;
     int16_t hh = EYE_H / 2;
     int16_t eye_l = cfg->cx - hw;
@@ -179,7 +187,7 @@ void eye_render(U8G2* disp, EyeConfig_t* cfg) {
 
     /* ---- 2. 瞳孔 (运行时缩放) ---- */
     int16_t pupil_r = (int16_t)((float)PUPIL_R * cfg->cur_pupil_scale);
-    if (pupil_r < 2) pupil_r = 2;  /* 最小 2px, 防止瞳孔消失 */
+    if (pupil_r < 1) pupil_r = 1;
 
     int16_t ppx = (int16_t)(cfg->cur_look_x * LOOK_MAX / 127.0f);
     int16_t ppy = (int16_t)(cfg->cur_look_y * LOOK_MAX / 127.0f);
@@ -193,16 +201,46 @@ void eye_render(U8G2* disp, EyeConfig_t* cfg) {
     int16_t pcx = cfg->cx + ppx;
     int16_t pcy = cfg->cy + ppy;
 
-    /* ---- 3. 瞳孔绘制 ---- */
+    /* ---- 3. 多态瞳孔绘制引擎 ---- */
     disp->setDrawColor(0);
-    disp->drawDisc(pcx, pcy, pupil_r, U8G2_DRAW_ALL);
 
-    /* ---- 4. 高光 (视差 + 防穿模限位) ---- */
+    if (cfg->cur_pupil_type == PUPIL_HEART) {
+        /* ♥ 爱心瞳孔: 两圆 + 一三角拼出爱心
+         *   上半: 两个半圆 (左 + 右)
+         *   下半: 倒三角拼成爱心尖 */
+        int16_t hr = pupil_r;
+        int16_t hd = hr / 2;
+        /* 左半圆 */
+        disp->drawDisc(pcx - hd, pcy - hd, hd, U8G2_DRAW_ALL);
+        /* 右半圆 */
+        disp->drawDisc(pcx + hd, pcy - hd, hd, U8G2_DRAW_ALL);
+        /* 下半三角: 从左下到右下的倒三角 */
+        disp->drawTriangle(pcx - hr,     pcy - hd + 1,
+                           pcx + hr,     pcy - hd + 1,
+                           pcx,          pcy + hr);
+    }
+    else if (cfg->cur_pupil_type == PUPIL_SLIT) {
+        /* | 竖缝瞳孔 (猫/蛇/野兽)
+         *   窄矩形, 宽度=半径1/3, 高度=直径 */
+        int16_t sw = pupil_r / 3;
+        if (sw < 1) sw = 1;
+        disp->drawBox(pcx - sw, pcy - pupil_r, sw * 2, pupil_r * 2);
+    }
+    else if (cfg->cur_pupil_type == PUPIL_NONE) {
+        /* 无瞳孔 (翻白眼/震惊) — 什么都不画 */
+    }
+    else {
+        /* PUPIL_NORMAL: 标准圆形瞳孔 */
+        disp->drawDisc(pcx, pcy, pupil_r, U8G2_DRAW_ALL);
+    }
+
+    /* ---- 4. 高光 (视差 + 防穿模) ---- */
     disp->setDrawColor(1);
     int16_t sx = (int16_t)(cfg->cur_look_x * SHINE_PARALLAX * LOOK_MAX / 127.0f);
     int16_t sy = (int16_t)(cfg->cur_look_y * SHINE_PARALLAX * LOOK_MAX / 127.0f);
 
-    if (SHINE1_R > 0) {
+    /* 爱心眼时禁用主高光 (爱心本身就够亮了, 高光会遮挡爱心结构) */
+    if (SHINE1_R > 0 && cfg->cur_pupil_type != PUPIL_HEART) {
         int16_t shx = clamp_i16(pcx + SHINE1_DX + sx, eye_l + SHINE1_R + 1, eye_r - SHINE1_R - 1);
         int16_t shy = clamp_i16(pcy + SHINE1_DY + sy, eye_t + SHINE1_R + 1, eye_b - SHINE1_R - 1);
         disp->drawDisc(shx, shy, SHINE1_R, U8G2_DRAW_ALL);
@@ -218,34 +256,56 @@ void eye_render(U8G2* disp, EyeConfig_t* cfg) {
         disp->drawDisc(shx, shy, SHINE3_R, U8G2_DRAW_ALL);
     }
 
-    /* ---- 5. 眼皮遮罩 (表情 + 眨眼合并) ---- */
+    /* ---- 5. 动态斜率多边形遮罩 (◣_◢) ---- */
     float lid_top, lid_bottom;
-
     if (cfg->lid > 0.001f) {
-        /* 眨眼进行中: 眨眼覆盖表情 */
+        /* 眨眼进行中 */
         lid_top    = cfg->lid;
         lid_bottom = cfg->lid * 0.5f;
     } else {
-        /* 无眨眼: 使用表情眼皮 */
         lid_top    = cfg->cur_lid_top;
         lid_bottom = cfg->cur_lid_bottom;
     }
 
-    if (lid_top < 0.001f && lid_bottom < 0.001f) { disp->setDrawColor(1); return; }
-
     disp->setDrawColor(0);
 
-    /* 上眼皮遮罩 */
-    if (lid_top > 0.001f) {
-        int16_t upper_h = (int16_t)((float)(hh + 2) * lid_top);
-        if (upper_h > 0) {
-            int16_t my = eye_t - 2;
-            if (my < 0) my = 0;
-            disp->drawBox(eye_l - 2, my, EYE_W + 4, upper_h);
+    /* 倾斜切角引擎 (处理 ◣_◢ 怒火 与 T_T 委屈)
+     *   lid_slope > 0: 内侧眼角下压 → 倒八字怒视
+     *   lid_slope < 0: 外侧眼角下垂 → 八字眉委屈
+     *   使用双三角形拼成四边形遮罩, 像刀一样切掉眼白
+     */
+    if (lid_top > 0.001f || cfg->cur_lid_slope > 0.01f || cfg->cur_lid_slope < -0.01f) {
+        int16_t slope_px = (int16_t)(cfg->cur_lid_slope * (float)hh);
+
+        /* 基础遮罩高度 */
+        int16_t base_y = eye_t + (int16_t)((float)(hh * 2 + 4) * lid_top);
+
+        /* 内侧/外侧眼角高度差
+         *   左眼: 内侧=右边(靠鼻梁), 外侧=左边
+         *   右眼: 内侧=左边(靠鼻梁), 外侧=右边 */
+        int16_t y_inner, y_outer;
+        if (is_left) {
+            /* 左眼: 鼻梁在右侧 */
+            y_inner = base_y + slope_px;
+            y_outer = base_y - slope_px;
+        } else {
+            /* 右眼: 鼻梁在左侧 */
+            y_inner = base_y + slope_px;
+            y_outer = base_y - slope_px;
         }
+
+        /* 映射到屏幕坐标: 左边缘 → y_outer, 右边缘 → y_inner */
+        int16_t y_left  = is_left ? y_outer : y_inner;
+        int16_t y_right = is_left ? y_inner : y_outer;
+
+        /* 双三角形拼成四边形遮罩 */
+        int16_t top = eye_t - 20;
+        if (top < 0) top = 0;
+        disp->drawTriangle(eye_l - 4, top, eye_r + 4, top, eye_l - 4, y_left);
+        disp->drawTriangle(eye_r + 4, top, eye_l - 4, y_left, eye_r + 4, y_right);
     }
 
-    /* 下眼皮遮罩 */
+    /* 平滑下眼皮遮罩 (笑眼弯弯 ^_^) */
     if (lid_bottom > 0.001f) {
         int16_t lower_h = (int16_t)((float)(hh + 2) * lid_bottom);
         if (lower_h > 0) {

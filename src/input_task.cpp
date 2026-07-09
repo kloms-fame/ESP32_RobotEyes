@@ -54,6 +54,10 @@ static uint8_t  adc_last_stable = 0;
 static uint8_t  adc_current_raw = 0;
 static uint32_t adc_debounce_ms = 0;
 
+/* 按键按下时刻追踪 (用于短按/长按判定) */
+static uint32_t adc_press_start_ms = 0;
+static uint8_t  adc_pressed_key     = 0;   /* 当前按下的键 (0=无) */
+
 #define ADC_KEY_DEBOUNCE_MS   30   /* 边沿去抖窗口: 30ms */
 #define ADC_KEY_NONE           0   /* 无按键 */
 

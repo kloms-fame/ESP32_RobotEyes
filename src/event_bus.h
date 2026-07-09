@@ -22,6 +22,7 @@ typedef enum {
     EVT_FORCE_RETURN,      /* 强制归位 */
     EVT_SERVO_MOVE,        /* 舵机移动 */
     EVT_EXPR_SET,          /* 表情切换: value_x=索引(0-7) */
+    EVT_EXPR_RELEASE,      /* 按键释放: value_x=索引, value_y=持有时长ms */
 } EventType_t;
 
 /* ================================================================
