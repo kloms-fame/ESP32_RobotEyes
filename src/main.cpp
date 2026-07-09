@@ -209,28 +209,41 @@ static void process_event(const EventMsg_t* msg) {
             servo_set_target(EXPRESSIONS[idx].brow_left,
                              EXPRESSIONS[idx].brow_right);
 
+            /* ---- 自动回弹计时器 ---- */
+            if (idx == 0) {
+                /* Normal: 不收束, 不设回弹 */
+                g_revert_deadline_ms = 0;
+            } else {
+                /* 非 Normal: 1.5s 后自动回弹 Normal
+                 * 每次按键都重置计时器, 防止多次点击状态混乱 */
+                g_revert_deadline_ms = millis() + 1500;
+            }
+
             Serial.print(F("[EXPR] Switched to "));
-            Serial.println(EXPRESSIONS[idx].name);
+            Serial.print(EXPRESSIONS[idx].name);
+            if (idx > 0) {
+                Serial.print(F(" (revert in 1.5s)"));
+            }
+            Serial.println();
         }
         break;
     }
 
     case EVT_EXPR_RELEASE: {
-        /* 按键释放: 根据持有时长决定短按/长按
+        /* 按键释放: 根据持有时长决定是否锁定
          *   msg->value_y = 持有时长 (ms)
-         *   短按 (<500ms): 启动 1.5s 自动回弹到 Normal
-         *   长按 (≥500ms): 维持表情不弹回
+         *   自动回弹计时器已在 EVT_EXPR_SET 中设置,
+         *   此处仅处理长按锁定 (清零计时器实现永久锁死)
          */
-        uint16_t held_ms = (uint16_t)msg->value_y;  /* int16_t → 直接使用, 支持 >255ms */
-        if (held_ms < ADC_LONG_PRESS_MS) {
-            /* 短按: 1.5s 后自动回弹 */
-            g_revert_deadline_ms = millis() + 1500;
-            Serial.println(F("[EXPR] Short press — will auto-revert in 1.5s"));
-        } else {
-            /* 长按: 锁定表情 */
+        uint16_t held_ms = (uint16_t)msg->value_y;
+        if (held_ms >= ADC_LONG_PRESS_MS) {
+            /* 长按 ≥500ms: 清零计时器 → 永久锁定当前表情 */
             g_revert_deadline_ms = 0;
-            Serial.println(F("[EXPR] Long press — expression locked"));
+            Serial.print(F("[EXPR] Long press ("));
+            Serial.print(held_ms);
+            Serial.println(F("ms) — expression locked"));
         }
+        /* 短按: 不干预, 计时器已在 EVT_EXPR_SET 中设好 */
         break;
     }
 

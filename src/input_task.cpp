@@ -250,6 +250,10 @@ void input_task_run(void* pvParameters) {
                 if (adc_current_raw != adc_last_stable) {
                     /* 按键按下: 推送 EVT_EXPR_SET */
                     if (adc_current_raw != ADC_KEY_NONE) {
+                        /* 记录按下时刻, 供释放时计算持有时长 */
+                        adc_press_start_ms = kb_now;
+                        adc_pressed_key    = adc_current_raw;
+
                         EventMsg_t kmsg;
                         kmsg.type    = EVT_EXPR_SET;
                         kmsg.value_x = adc_current_raw - 1;  /* 转为 0-based 索引 */
@@ -263,7 +267,24 @@ void input_task_run(void* pvParameters) {
                         Serial.print(F(") → expr="));
                         Serial.println(EXPRESSIONS[adc_current_raw - 1].name);
                     }
-                    /* 否则: 按键释放 (静默, 不产生事件) */
+                    else {
+                        /* 按键释放: 推送 EVT_EXPR_RELEASE (携带持有时长) */
+                        uint8_t  released_key = adc_last_stable - 1;  /* 0-based */
+                        uint16_t held_ms       = (uint16_t)(kb_now - adc_press_start_ms);
+
+                        EventMsg_t kmsg;
+                        kmsg.type    = EVT_EXPR_RELEASE;
+                        kmsg.value_x = released_key;
+                        kmsg.value_y = (int16_t)held_ms;
+                        kmsg._pad[0] = 0;
+                        event_bus_push(&kmsg);
+
+                        Serial.print(F("[KEY] S"));
+                        Serial.print((int)adc_last_stable);
+                        Serial.print(F(" released (held="));
+                        Serial.print(held_ms);
+                        Serial.println(F("ms)"));
+                    }
 
                     adc_last_stable = adc_current_raw;
                 }
