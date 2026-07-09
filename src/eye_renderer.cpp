@@ -371,38 +371,71 @@ void eye_draw_lid_mask(U8G2* disp, const EyeGeom_t* geom) {
 }
 
 /* ================================================================
- *  eye_draw_tears() — Sad 泪海特效 (仅在 active_expr==3 时调用)
+ *  eye_draw_tears() — Sad 泪滴特效 (仅在 active_expr==3 时调用)
  *
- *  从渲染管线中分离, 不污染核心绘制逻辑。
+ *  v7.0: 眼睑边缘坐标映射
+ *
+ *  泪滴从下眼睑边缘滑落, 而非从瞳孔下方固定位置。
+ *  坐标计算:
+ *    tear_origin_y = eye_b - lid_bottom_h  (下眼睑上缘)
+ *    tear_y = tear_origin_y + phase * rate  (滑落距离)
+ *    tear_y clamp: [tear_origin_y, eye_b - 2]  (不超出眼眶)
+ *
+ *  双泪滴相位错落: 泪1 从 0 开始, 泪2 延迟 800ms
+ *  泪滴形状: drawDisc + drawTriangle 拼成水滴形
  * ================================================================ */
 static void eye_draw_tears(U8G2* disp, const EyeGeom_t* geom) {
     int16_t pcx = geom->pupil_cx;
     int16_t pcy = geom->pupil_cy;
     int16_t pr  = geom->pupil_r;
 
+    /* 下眼睑上缘 Y 坐标 (泪滴起点) */
+    int16_t tear_origin_y = geom->eye_b - geom->lid_bottom_h;
+    if (tear_origin_y < pcy + pr) {
+        tear_origin_y = pcy + pr;  /* 至少从瞳孔下缘开始 */
+    }
+
     /* 眼底积水反光 */
     disp->setDrawColor(1);
-    int16_t water_y = pcy + pr - 2;
-    disp->drawBox(pcx - pr + 2, water_y, pr * 2 - 4, 3);
+    int16_t water_y = tear_origin_y - 1;
+    disp->drawBox(pcx - pr + 2, water_y, pr * 2 - 4, 2);
 
-    /* 水光闪烁 */
+    /* 水光闪烁 (抽泣感) */
     if (millis() % 600 > 300) {
         disp->drawBox(pcx - pr/2 - 1, pcy + pr/3, pr + 2, 2);
     }
 
     /* 双泪滴错落滑落 */
     disp->setDrawColor(0);
-    uint32_t t1 = millis() % 1800;
-    int16_t y1 = pcy + pr + (int16_t)(t1 * 18 / 1800);
-    if (y1 < geom->eye_b - 2) {
-        int16_t x1 = pcx + (geom->is_left ? -8 : 8);
+    const uint32_t cycle_ms = 2200;  /* 完整滑落周期 */
+
+    /* 泪滴 1: phase 从 press 时刻开始 */
+    uint32_t t1 = millis() % cycle_ms;
+    int16_t y1 = tear_origin_y + (int16_t)((float)t1 * 0.010f);  /* rate=0.010 px/ms */
+
+    /* clamp 到眼睑边缘内 */
+    int16_t tear_max_y = geom->eye_b - 3;
+    if (y1 > tear_max_y) y1 = tear_max_y;
+    if (y1 < tear_origin_y) y1 = tear_origin_y;
+
+    if (y1 < tear_max_y) {
+        /* 泪滴位置: 眼角外侧 (左眼=左外角, 右眼=右外角) */
+        int16_t x1 = geom->is_left ? (geom->eye_l + 10) : (geom->eye_r - 10);
+        /* 水滴形: 圆 + 倒三角尖 */
         disp->drawDisc(x1, y1, 3, U8G2_DRAW_ALL);
         disp->drawTriangle(x1-3, y1, x1+3, y1, x1, y1-5);
     }
-    uint32_t t2 = (millis() + 800) % 2000;
-    int16_t y2 = pcy + pr + (int16_t)(t2 * 16 / 2000);
-    if (y2 < geom->eye_b - 2) {
-        int16_t x2 = pcx + (geom->is_left ? 4 : -4);
+
+    /* 泪滴 2: 延迟 800ms 错落 */
+    uint32_t t2 = (millis() + 800) % cycle_ms;
+    int16_t y2 = tear_origin_y + (int16_t)((float)t2 * 0.008f);  /* 稍慢 */
+
+    if (y2 > tear_max_y) y2 = tear_max_y;
+    if (y2 < tear_origin_y) y2 = tear_origin_y;
+
+    if (y2 < tear_max_y) {
+        /* 泪滴位置: 眼角内侧, 比泪1更小 */
+        int16_t x2 = geom->is_left ? (geom->eye_l + 18) : (geom->eye_r - 18);
         disp->drawDisc(x2, y2, 2, U8G2_DRAW_ALL);
         disp->drawTriangle(x2-2, y2, x2+2, y2, x2, y2-4);
     }
@@ -477,8 +510,11 @@ void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy) {
     cfg->brow_phase         = 0.0f;
     cfg->brow_angry_phase   = 0.0f;
     cfg->brow_burst_timer   = 0.0f;
+    cfg->brow_anim_phase    = 0.0f;
     cfg->brow_offset_l      = 0;
     cfg->brow_offset_r      = 0;
+    cfg->tear_phase_ms      = 0;
+    cfg->tear_phase2_ms     = 0;
 }
 
 void eye_set_look(EyeConfig_t* cfg, int8_t x, int8_t y) {
@@ -511,8 +547,11 @@ void eye_set_expression(EyeConfig_t* cfg, uint8_t expr_index) {
     cfg->brow_phase      = 0.0f;
     cfg->brow_angry_phase = 0.0f;
     cfg->brow_burst_timer = 0.0f;
+    cfg->brow_anim_phase  = 0.0f;
     cfg->brow_offset_l   = 0;
     cfg->brow_offset_r   = 0;
+    cfg->tear_phase_ms   = 0;
+    cfg->tear_phase2_ms  = 800;  /* 第二滴泪延迟 800ms */
 
     if (expr->anim_peak > 0.001f || expr->anim_peak < -0.001f) {
         cfg->target_pupil_scale = expr->anim_peak;
@@ -555,27 +594,112 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
         cfg->target_lid_top = cfg->sleepy_lid;
     }
 
-    /* 眉毛微动引擎 */
-    cfg->brow_phase += 0.02f;
-    float breathe = sin(cfg->brow_phase) * 2.0f;
+    /* ============================================================
+     *  眉毛动画引擎 v7.0 — 参数驱动, OCP
+     *
+     *  通过 ExpressionDef_t.brow_anim 分派动画类型,
+     *  所有参数从表情表读取 (brow_freq / brow_amp / brow_asymmetry),
+     *  新增动画类型只需: 加枚举 + 加 case, 无需改表达式表结构。
+     * ============================================================ */
+    if (cfg->active_expr < 8) {
+        const ExpressionDef_t* expr = &EXPRESSIONS[cfg->active_expr];
+        float freq = expr->brow_freq;
+        float amp  = expr->brow_amp;
+        float asym = expr->brow_asymmetry;
+        float off_l = 0.0f, off_r = 0.0f;
 
-    if (cfg->active_expr == 2) {
-        cfg->brow_angry_phase += 0.15f;
-        cfg->brow_burst_timer += 0.033f;
-        float burst = 0.0f;
-        float bt = fmod(cfg->brow_burst_timer, 0.8f);
-        if (bt < 0.1f) {
-            burst = sin(bt / 0.1f * M_PI) * 5.0f;
+        switch (expr->brow_anim) {
+
+        case BROW_ANIM_BREATHE: {
+            /* sin 慢呼吸: 左右同步, 小幅度 */
+            cfg->brow_anim_phase += freq;
+            off_l = sin(cfg->brow_anim_phase) * amp;
+            off_r = off_l;
+            break;
         }
-        cfg->brow_offset_l = (int8_t)(sin(cfg->brow_angry_phase) * 3.0f + burst + breathe);
-        cfg->brow_offset_r = (int8_t)(sin(cfg->brow_angry_phase + 0.5f) * 3.0f - burst + breathe);
-    } else if (cfg->active_expr == 3) {
-        float sob = sin(cfg->brow_phase * 0.7f + 2.0f) * 1.5f;
-        cfg->brow_offset_l = (int8_t)(breathe + sob);
-        cfg->brow_offset_r = (int8_t)(breathe - sob);
-    } else {
-        cfg->brow_offset_l = (int8_t)breathe;
-        cfg->brow_offset_r = (int8_t)breathe;
+
+        case BROW_ANIM_TREMBLE: {
+            /* 高频震颤 + 周期性爆发 burst
+             *
+             *  载波:   sin(phase) * amp                 → 基础震颤
+             *  爆发:   每 brow_burst_intv ms 触发一次
+             *          正弦包络 sin(t/T*pi) * burst_amp  → 0→峰值→0
+             *          宽度 = burst_intv * 0.125 (12.5% 占空比)
+             *  叠加:   off = carrier + burst
+             *  左右:   off_l = off, off_r = -off * asymmetry → 反相颤抖
+             */
+            cfg->brow_anim_phase += freq;
+            float carrier = sin(cfg->brow_anim_phase) * amp;
+
+            /* 爆发计算 */
+            float burst = 0.0f;
+            uint32_t cycle = millis() % (uint32_t)expr->brow_burst_intv;
+            uint32_t burst_width = (uint32_t)expr->brow_burst_intv / 8;
+            if (cycle < burst_width) {
+                /* 正弦包络: 0 → 1 → 0 */
+                float bt = (float)cycle / (float)burst_width;
+                burst = sin(bt * M_PI) * expr->brow_burst_amp;
+            }
+
+            off_l = carrier + burst;
+            off_r = -(carrier * asym) - burst * asym;
+            break;
+        }
+
+        case BROW_ANIM_SOB: {
+            /* 抽泣波: 慢频率 + 左右错相
+             *
+             *  左眉: sin(phase) * amp
+             *  右眉: sin(phase + pi*asymmetry) * amp
+             *  左右异步产生抽泣感
+             */
+            cfg->brow_anim_phase += freq;
+            off_l = sin(cfg->brow_anim_phase) * amp;
+            off_r = sin(cfg->brow_anim_phase + M_PI * asym) * amp;
+            break;
+        }
+
+        case BROW_ANIM_RAISE_BOUNCE: {
+            /* 上扬弹跳: 先快升 → 阻尼回落
+             *
+             *  phase 从 0 单调递增, 用 exp 衰减模拟弹跳:
+             *    off = amp * exp(-phase * 3) * sin(phase * 6)
+             *  初始: ~amp (快速上扬)
+             *  稳定: → 0 (回落到基础角度)
+             */
+            cfg->brow_anim_phase += freq;
+            float decay = expf(-cfg->brow_anim_phase * 3.0f);
+            float bounce = sin(cfg->brow_anim_phase * 6.0f) * decay * amp;
+            off_l = bounce;
+            off_r = bounce;
+            break;
+        }
+
+        case BROW_ANIM_SAG_DRIFT: {
+            /* 无力下垂 + 微漂移
+             *
+             *  基准: -amp (下垂偏移)
+             *  叠加: 超低频 sin 漂移 (±amp*0.5)
+             *  左右: 略带非对称 (asymmetry)
+             */
+            cfg->brow_anim_phase += freq;
+            float drift  = sin(cfg->brow_anim_phase * 0.3f) * amp * 0.5f;
+            float drift2 = sin(cfg->brow_anim_phase * 0.3f + 1.5f) * amp * 0.5f;
+            off_l = -amp + drift;
+            off_r = -amp + drift2 * asym;
+            break;
+        }
+
+        case BROW_ANIM_NONE:
+        default:
+            cfg->brow_anim_phase += freq;
+            off_l = 0.0f;
+            off_r = 0.0f;
+            break;
+        }
+
+        cfg->brow_offset_l = (int8_t)off_l;
+        cfg->brow_offset_r = (int8_t)off_r;
     }
 
     /* 表达式参数 lerp */

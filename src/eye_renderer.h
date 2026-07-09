@@ -153,12 +153,17 @@ typedef struct {
     uint32_t sleepy_phase_ms;
     float    sleepy_lid;
 
-    /* 眉毛微动引擎 */
-    float    brow_phase;
-    float    brow_angry_phase;
-    float    brow_burst_timer;
-    int8_t   brow_offset_l;
-    int8_t   brow_offset_r;
+    /* 眉毛微动引擎 (v7.0: 参数化) */
+    float    brow_phase;           /* 通用动画相位 (弧度) */
+    float    brow_angry_phase;     /* Angry 震颤相位 (保留兼容) */
+    float    brow_burst_timer;     /* Angry 爆发计时器 (保留兼容) */
+    float    brow_anim_phase;      /* 表情特定动画相位 (v7.0) */
+    int8_t   brow_offset_l;        /* 左眉当前微动偏移 */
+    int8_t   brow_offset_r;        /* 右眉当前微动偏移 */
+
+    /* 泪滴动画 (v7.0) */
+    uint32_t tear_phase_ms;        /* 泪滴动画计时器 */
+    uint32_t tear_phase2_ms;       /* 第二滴泪相位偏移 */
 } EyeConfig_t;
 
 /* ================================================================
