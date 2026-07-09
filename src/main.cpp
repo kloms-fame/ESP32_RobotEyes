@@ -1,147 +1,96 @@
 /**
  * @file    main.cpp
- * @brief   RobotEyes Phase 1 MVP — 双 I2C OLED 独立初始化 + I2C 扫描
+ * @brief   RobotEyes 阶段2 v4 — updateDisplayArea 局部刷新
  * @author  Rennick (AI 辅助开发)
- * @date    2026-07-08
+ * @date    2026-07-09
  *
- * 功能边界: 仅点亮双屏，显示静态测试图案。无按键/摇杆/舵机/WiFi/FreeRTOS。
+ * 核心改进:
+ *   - 用 updateDisplayArea(tx,ty,tw,th) 替代 sendBuffer()
+ *   - 只发送眼球包围盒对应的 6×6=36 tile (288 bytes), 而非全屏 1024 bytes
+ *   - 首次初始化时 clearBuffer+sendBuffer 做全屏黑色打底
+ *   - 诊断日志分别显示 I2C 传输耗时和渲染耗时
  *
- * 硬件架构:
- *   - 左眼 SSD1306: 硬件 I2C, GPIO 8(SDA) + GPIO 9(SCL), 地址 0x3C
- *   - 右眼 GM009605v4.3: 软件 I2C, GPIO 7(SDA) + GPIO 6(SCL), 地址 0x3C
- *   - 两块屏地址相同但挂在不同的 I2C 总线上，完全独立，无冲突
- *
- * 设计理由:
- *   GM009605 的 I2C 地址被硬件锁死在 0x3C（FPC 排线第 15 脚直连 GND），
- *   无法通过跳线修改。因此为右眼单独开辟一条软件 I2C 总线。
- *
- * 备用构造函数（右眼不亮时依次尝试）:
- *   // U8G2_SH1106_128X64_NONAME_F_SW_I2C rightDisp(...)
- *   // U8G2_SSD1309_128X64_NONAME_F_SW_I2C rightDisp(...)
+ *  预期: 右眼 SW I2C 从 ~450ms → ~120ms (288/1024=28% 数据量)
  */
 
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Wire.h>
 #include "pin_config.h"
+#include "eye_renderer.h"
 
 /* ================================================================
- *  全局显示对象
- *  ----------------------------------------------------------------
- *  左眼: 硬件 I2C，复用 setup() 中的 Wire.begin(8, 9)
- *  右眼: 软件 I2C，GPIO 6=SCL, GPIO 7=SDA, 独立总线
+ *  全局显示对象 — _F 全缓冲
+ *  右眼改回 400kHz (800kHz 已被实测证明无效)
  * ================================================================ */
 
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C leftDisp(U8G2_R0, U8X8_PIN_NONE);
-
-// ★ 软件 I2C: clock=GPIO6, data=GPIO7, reset=不使用
-//    SW_I2C 构造函数会通过 GPIO 模拟 I2C 时序，不依赖 Wire 库
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C rightDisp(U8G2_R0,
-                                              SW_I2C_SCL,
-                                              SW_I2C_SDA,
-                                              U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_leftDisp(U8G2_R0, U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_F_SW_I2C g_rightDisp(U8G2_R0,
+                                                  PIN_SW_I2C_SCL,
+                                                  PIN_SW_I2C_SDA,
+                                                  U8X8_PIN_NONE);
 
 bool g_leftReady  = false;
 bool g_rightReady = false;
 
-/* ================================================================
- *  i2cScan() — 硬件 I2C 总线扫描（仅扫描 GPIO 8/9）
- *  ----------------------------------------------------------------
- *  注意: 软件 I2C 总线上的设备不会出现在此扫描中。
- *        右眼 GM009605 在 GPIO 6/7 上，需要独立验证。
- * ================================================================ */
-void i2cScan() {
-    Serial.println(F("[SCAN] 硬件 I2C 总线扫描 (SDA=GPIO8, SCL=GPIO9) ..."));
-    Serial.println(F("       注意: 右眼在软件 I2C (GPIO6/7) 上，不会出现在此扫描"));
-    Serial.println();
-
-    int foundCount = 0;
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.print(F("       [FOUND] 0x"));
-            if (addr < 0x10) Serial.print(F("0"));
-            Serial.print(addr, HEX);
-            if (addr == I2C_ADDR_SSD1306) {
-                Serial.print(F("  <- 左眼 SSD1306"));
-            }
-            Serial.println();
-            foundCount++;
-        }
-    }
-
-    Serial.println();
-    Serial.print(F("[SCAN] 共发现 "));
-    Serial.print(foundCount);
-    Serial.println(F(" 个设备（不含软件 I2C 总线）"));
-    Serial.println();
-}
+static EyeConfig_t  g_eyeCfg;
+static BlinkState_t g_blinkState;
+static MicroState_t g_microState;
 
 /* ================================================================
- *  initDisplays() — 双屏硬件初始化
+ *  initLeftDisplay()
  * ================================================================ */
-bool initDisplays() {
-    /* ---- 左眼 SSD1306 硬件 I2C @0x3C ---- */
-    Serial.print(F("[INIT] Left  SSD1306 HW-I2C @0x"));
-    Serial.print(I2C_ADDR_SSD1306, HEX);
+bool initLeftDisplay() {
+    Serial.print(F("[LEFT]  I2C probe @0x"));
+    Serial.print(I2C_ADDR_LEFT, HEX);
     Serial.print(F(" ... "));
-    Serial.flush();
-
-    leftDisp.setI2CAddress(I2C_ADDR_SSD1306 << 1);
-    g_leftReady = leftDisp.begin();
-    if (g_leftReady) {
-        leftDisp.setPowerSave(0);
-        Serial.println(F("[OK]"));
-    } else {
-        Serial.println(F("[FAIL]"));
+    Wire.beginTransmission(I2C_ADDR_LEFT);
+    uint8_t error = Wire.endTransmission();
+    if (error != 0) {
+        Serial.print(F("[FAIL] err="));
+        Serial.print(error);
+        Serial.println(F(", skip"));
+        return false;
     }
-
-    /* ---- 右眼 GM009605 软件 I2C @0x3C ---- */
-    Serial.print(F("[INIT] Right GM009605 SW-I2C @0x"));
-    Serial.print(I2C_ADDR_GM009605, HEX);
-    Serial.print(F(" (GPIO6=SCL, GPIO7=SDA) ... "));
-    Serial.flush();
-
-    // ★ 不需要 setI2CAddress — 软件 I2C 独占总线，默认 0x3C 无冲突
-    g_rightReady = rightDisp.begin();
-    if (g_rightReady) {
-        rightDisp.setPowerSave(0);
-        Serial.println(F("[OK]"));
-    } else {
-        Serial.println(F("[FAIL]"));
-        Serial.println(F("       排查: 1) GPIO6/7 接线 2) 尝试 SH1106/SSD1309 备选构造函数"));
-    }
-
-    return (g_leftReady && g_rightReady);
+    Serial.println(F("[OK]"));
+    Serial.print(F("[LEFT]  U8g2 begin() ... "));
+    g_leftDisp.setI2CAddress(I2C_ADDR_LEFT << 1);
+    if (!g_leftDisp.begin()) { Serial.println(F("[FAIL]")); return false; }
+    Serial.println(F("[OK]"));
+    Serial.print(F("[LEFT]  setBusClock(400000) ... "));
+    g_leftDisp.setBusClock(400000);
+    Serial.println(F("[OK]"));
+    g_leftDisp.setPowerSave(0);
+    return true;
 }
 
 /* ================================================================
- *  renderLeftFrame() — 左屏: 同心圆 + L
+ *  initRightDisplay()
  * ================================================================ */
-void renderLeftFrame() {
-    if (!g_leftReady) return;
-    leftDisp.clearBuffer();
-    leftDisp.drawCircle(64, 32, 25, U8G2_DRAW_ALL);
-    leftDisp.drawCircle(64, 32, 15, U8G2_DRAW_ALL);
-    leftDisp.setFont(u8g2_font_ncenB24_tr);
-    leftDisp.setFontMode(1);
-    leftDisp.drawStr(46, 44, "L");
-    leftDisp.sendBuffer();
-    Serial.println(F("[DRAW] 左屏 -> 同心圆 + L"));
+bool initRightDisplay() {
+    Serial.print(F("[RIGHT] SW-I2C begin() (GPIO"));
+    Serial.print(PIN_SW_I2C_SDA);
+    Serial.print(F("=SDA, GPIO"));
+    Serial.print(PIN_SW_I2C_SCL);
+    Serial.print(F("=SCL) ... "));
+    if (!g_rightDisp.begin()) { Serial.println(F("[FAIL]")); return false; }
+    Serial.println(F("[OK]"));
+    Serial.print(F("[RIGHT] setBusClock(400000) ... "));
+    g_rightDisp.setBusClock(400000);
+    Serial.println(F("[OK]"));
+    g_rightDisp.setPowerSave(0);
+    return true;
 }
 
 /* ================================================================
- *  renderRightFrame() — 右屏: 矩形方框 + R
+ *  screenBlackOut() — 全屏发送黑色帧, 一次性打底
+ *
+ *  之后每一帧只 updateDisplayArea 眼球包围盒的 tile,
+ *  包围盒外区域永远是黑底, 不需要再传。
  * ================================================================ */
-void renderRightFrame() {
-    if (!g_rightReady) return;
-    rightDisp.clearBuffer();
-    rightDisp.drawFrame(20, 8, 88, 48);
-    rightDisp.setFont(u8g2_font_ncenB24_tr);
-    rightDisp.setFontMode(1);
-    rightDisp.drawStr(46, 44, "R");
-    rightDisp.sendBuffer();
-    Serial.println(F("[DRAW] 右屏 -> 矩形方框 + R"));
+static void screenBlackOut(U8G2* disp) {
+    disp->clearBuffer();
+    disp->sendBuffer();  /* 仅此一次全屏发送 */
 }
 
 /* ================================================================
@@ -153,35 +102,153 @@ void setup() {
 
     Serial.println();
     Serial.println(F("========================================"));
-    Serial.println(F("  RobotEyes Phase 1 — 双 I2C 独立刷新 MVP"));
+    Serial.println(F("  RobotEyes Phase 2 v4 — Partial Refresh"));
     Serial.println(F("========================================"));
     Serial.println();
 
-    // 硬件 I2C 初始化（仅左眼使用）
-    Wire.begin(I2C_SDA, I2C_SCL);
-    Serial.println(F("[WIRE] 硬件 I2C 初始化 (SDA=GPIO8, SCL=GPIO9)"));
-    Serial.println(F("[WIRE] 软件 I2C 由 U8g2 SW_I2C 内部管理 (SCL=GPIO6, SDA=GPIO7)"));
+    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+    Serial.print(F("[WIRE] HW I2C (SDA=GPIO"));
+    Serial.print(PIN_I2C_SDA);
+    Serial.print(F(", SCL=GPIO"));
+    Serial.print(PIN_I2C_SCL);
+    Serial.println(F(") [OK]"));
     Serial.println();
 
-    i2cScan();
-
-    bool allOk = initDisplays();
+    g_leftReady  = initLeftDisplay();
+    Serial.println();
+    g_rightReady = initRightDisplay();
     Serial.println();
 
-    if (allOk) {
-        Serial.println(F("[SUMMARY] 双屏全部成功！"));
-    } else {
-        Serial.println(F("[SUMMARY] 部分屏幕初始化失败"));
+    /* 全屏黑色打底 (一次性) */
+    if (g_leftReady) {
+        Serial.print(F("[BLANK] Left  full-screen ... "));
+        screenBlackOut(&g_leftDisp);
+        Serial.println(F("[OK]"));
     }
-
+    if (g_rightReady) {
+        Serial.print(F("[BLANK] Right full-screen ... "));
+        screenBlackOut(&g_rightDisp);
+        Serial.println(F("[OK]"));
+    }
     Serial.println();
-    renderLeftFrame();
-    renderRightFrame();
 
-    Serial.println(F("[DONE] 初始化结束。"));
+    eye_config_init(&g_eyeCfg, 64, 32);
+    blink_state_init(&g_blinkState);
+    micro_state_init(&g_microState);
+
+    Serial.print(F("[ANIM] rx="));
+    Serial.print(EYE_RX);
+    Serial.print(F(" ry="));
+    Serial.print(EYE_RY);
+    Serial.print(F(" pupil="));
+    Serial.print(PUPIL_RADIUS);
+    Serial.print(F(" +shine"));
+    Serial.println();
+
+    Serial.print(F("[TILE] tx="));
+    Serial.print(EYE_TILE_X);
+    Serial.print(F(" ty="));
+    Serial.print(EYE_TILE_Y);
+    Serial.print(F(" tw="));
+    Serial.print(EYE_TILE_W);
+    Serial.print(F(" th="));
+    Serial.print(EYE_TILE_H);
+    Serial.print(F(" ("));
+    Serial.print(EYE_TILE_W * EYE_TILE_H * 8);
+    Serial.println(F(" bytes/frame)"));
+    Serial.println();
+
+    Serial.print(F("[SUMMARY] Left="));
+    Serial.print(g_leftReady ? F("OK") : F("FAIL"));
+    Serial.print(F("  Right="));
+    Serial.print(g_rightReady ? F("OK") : F("FAIL"));
+    Serial.println();
     Serial.println(F("========================================"));
 }
 
+/* ================================================================
+ *  loop() — 30fps + 局部刷新 + 诊断计时
+ *
+ *  诊断输出:
+ *    Lsend=左屏I2C耗时  Rsend=右屏I2C耗时  Lrender=左屏渲染耗时
+ *    (渲染=clearBuffer+eye_render  I2C=updateDisplayArea)
+ * ================================================================ */
 void loop() {
-    // Phase 1 MVP — 静态显示
+    static uint32_t lastFrameMs  = 0;
+    static uint32_t lastBeatMs   = 0;
+    static uint32_t lastLSendUs  = 0;
+    static uint32_t lastRSendUs  = 0;
+    static uint32_t lastLRenderUs= 0;
+    static uint32_t lastRRenderUs= 0;
+
+    uint32_t now = millis();
+    if (now - lastFrameMs < FRAME_INTERVAL_MS) return;
+    lastFrameMs = now;
+
+    /* Step 1: 状态更新 */
+    blink_state_update(&g_blinkState, &g_eyeCfg, now);
+    micro_state_update(&g_microState, &g_eyeCfg, now);
+
+    /* Step 2: 渲染 + 局部 I2C 发送 (带 micros 计时) */
+    if (g_leftReady && g_rightReady) {
+        uint32_t t0, t1, t2, t3, t4;
+
+        /* ---- 左屏 ---- */
+        t0 = micros();
+        g_leftDisp.clearBuffer();
+        eye_render(&g_leftDisp, &g_eyeCfg);
+        t1 = micros();
+        g_leftDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y,
+                                      EYE_TILE_W, EYE_TILE_H);
+        t2 = micros();
+
+        /* ---- 右屏 ---- */
+        g_rightDisp.clearBuffer();
+        eye_render(&g_rightDisp, &g_eyeCfg);
+        t3 = micros();
+        g_rightDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y,
+                                       EYE_TILE_W, EYE_TILE_H);
+        t4 = micros();
+
+        lastLRenderUs = t1 - t0;
+        lastLSendUs   = t2 - t1;
+        lastRRenderUs = t3 - t2;
+        lastRSendUs   = t4 - t3;
+    } else {
+        if (g_leftReady) {
+            g_leftDisp.clearBuffer();
+            eye_render(&g_leftDisp, &g_eyeCfg);
+            g_leftDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y,
+                                          EYE_TILE_W, EYE_TILE_H);
+        }
+        if (g_rightReady) {
+            g_rightDisp.clearBuffer();
+            eye_render(&g_rightDisp, &g_eyeCfg);
+            g_rightDisp.updateDisplayArea(EYE_TILE_X, EYE_TILE_Y,
+                                           EYE_TILE_W, EYE_TILE_H);
+        }
+    }
+
+    /* 心跳 + 诊断 */
+    if (now - lastBeatMs >= 2000) {
+        lastBeatMs = now;
+        Serial.print(F("[BEAT] "));
+        if (g_leftReady && g_rightReady) {
+            Serial.print(F("Lren="));
+            Serial.print(lastLRenderUs);
+            Serial.print(F("us Lsend="));
+            Serial.print(lastLSendUs);
+            Serial.print(F("us | Rren="));
+            Serial.print(lastRRenderUs);
+            Serial.print(F("us Rsend="));
+            Serial.print(lastRSendUs);
+            Serial.print(F("us | "));
+        }
+        Serial.print(F("blink="));
+        Serial.print(g_blinkState.phase);
+        Serial.print(F(" lid="));
+        Serial.print(g_eyeCfg.lid, 2);
+        Serial.print(F(" micro="));
+        Serial.println(g_microState.anim);
+    }
 }
