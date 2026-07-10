@@ -1,8 +1,8 @@
 /**
  * @file    eye_renderer.h
- * @brief   RobotEyes 眼型渲染 v7.0 — OCP 解耦管线
+ * @brief   RobotEyes 眼型渲染 v9.0 — OCP 解耦管线
  * @author  Rennick (AI 辅助开发)
- * @date    2026-07-09
+ * @date    2026-07-10
  *
  *  架构:
  *    eye_geom_compute() → EyeGeom_t (纯几何, 无副作用)
@@ -13,6 +13,10 @@
  *
  *  OCP: 新增瞳孔类型 = 新增 draw 函数 + 注册分派表, 核心管线零修改
  *  OCP: 新增风格 = 新增 EyeStyle_t 常量 (宏切换)
+ *
+ *  v9.0 新增:
+ *    - EyeConfig_t 新增 happy_wink / panic_scan / surprised 字段
+ *    - eye_draw_sweat() 恐慌冷汗特效
  */
 
 #ifndef EYE_RENDERER_H
@@ -56,9 +60,6 @@ typedef enum {
 
 /* ================================================================
  *  EyeStyle_t — 风格参数 (OCP: 新增风格 = 新增此结构体常量)
- *
- *  所有几何尺寸集中在此, 渲染管线通过此结构体获取参数,
- *  不依赖任何硬编码宏。
  * ================================================================ */
 typedef struct {
     uint8_t  eye_w;           /* 眼宽 (px) */
@@ -81,9 +82,6 @@ typedef struct {
 
 /* ================================================================
  *  EyeGeom_t — 单帧几何计算结果 (纯数据, 无副作用)
- *
- *  由 eye_geom_compute() 一次性计算, 所有 draw 函数只读不写。
- *  复用此结构体避免在绘制循环中重复计算。
  * ================================================================ */
 typedef struct {
     /* 眼眶边界 */
@@ -117,7 +115,7 @@ typedef struct {
 } EyeGeom_t;
 
 /* ================================================================
- *  EyeConfig_t — 运行时状态 (对外 API 不变, 保持兼容)
+ *  EyeConfig_t — 运行时状态 v9.0
  * ================================================================ */
 typedef struct {
     uint8_t cx, cy;           /* 眼睛中心坐标 */
@@ -185,6 +183,22 @@ typedef struct {
     uint8_t  idle_micro_type;      /* 0=none, 1=pupil_scale, 2=brow_twitch, 3=lid_flutter */
     float    idle_micro_lid_delta; /* 眼皮微动幅度 */
     float    idle_micro_pupil_delta;/* 瞳孔缩放幅度 */
+
+    /* ---- v9.0 新增字段 ---- */
+
+    /* Happy 单眼快眨 */
+    uint32_t happy_wink_next_ms;   /* 下次快眨时刻 */
+    uint8_t  happy_wink_eye;       /* 0=无, 1=左眼, 2=右眼 */
+    uint32_t happy_wink_start_ms;  /* 快眨开始时刻 */
+
+    /* Panic 恐慌眼球扫视 */
+    uint32_t panic_scan_next_ms;   /* 下次扫视时刻 */
+
+    /* Excited 心跳缩放 (通过 millis() 直接计算, 不依赖 anim_peak) */
+    /* (无额外字段, 在 eye_expr_update 中直接使用 millis()) */
+
+    /* Surprised 四阶段大小眼 (通过 millis() 在 eye_expr_update 中计算) */
+    /* (无额外字段, 在 eye_expr_update 中直接计算) */
 } EyeConfig_t;
 
 /* ================================================================
@@ -231,6 +245,7 @@ void eye_draw_body(U8G2* disp, const EyeGeom_t* geom);
 void eye_draw_pupil(U8G2* disp, const EyeGeom_t* geom);
 void eye_draw_shine(U8G2* disp, const EyeGeom_t* geom);
 void eye_draw_lid_mask(U8G2* disp, const EyeGeom_t* geom);
+void eye_draw_sweat(U8G2* disp, const EyeGeom_t* geom);  /* v9.0: Panic 冷汗 */
 
 /* ---- 渲染入口 (组装管线) ---- */
 void eye_render(U8G2* disp, EyeConfig_t* cfg, bool is_left);

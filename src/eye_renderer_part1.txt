@@ -1,0 +1,113 @@
+/**
+ * @file    eye_renderer.cpp
+ * @brief   RobotEyes 眼型渲染 v9.0 — OCP 解耦管线实现
+ * @author  Rennick (AI 辅助开发)
+ * @date    2026-07-10
+ */
+
+#include "eye_renderer.h"
+#include "expressions.h"
+#include <math.h>
+
+static inline float ease_in(float t)  { return t * t; }
+static inline float ease_out(float t) { float i = 1.0f - t; return 1.0f - i * i; }
+
+static inline int16_t clamp_i16(int16_t v, int16_t lo, int16_t hi) {
+    if (v < lo) return lo; if (v > hi) return hi; return v;
+}
+
+#ifdef EYE_STYLE_A
+static const EyeStyle_t g_style = { 56,44, 20, 10,16, 0.55f, -6,-7,4, 7,5,2, -2,3,1 };
+#endif
+#ifdef EYE_STYLE_B
+static const EyeStyle_t g_style = { 46,32, 16,0, 13, 0.30f, -5,-4,3, 5,-3,2, 0,0,0 };
+#endif
+#ifdef EYE_STYLE_C
+static const EyeStyle_t g_style = { 40,36, 12,0, 12, 0.30f, -3,-7,3, 0,0,0, 0,0,0 };
+#endif
+
+typedef void (*PupilDrawFunc)(U8G2*, const EyeGeom_t*);
+
+static void draw_pupil_normal(U8G2* disp, const EyeGeom_t* g) {
+    if (g->pupil_r > 0) disp->drawDisc(g->pupil_cx, g->pupil_cy, g->pupil_r, U8G2_DRAW_ALL);
+}
+
+static void draw_pupil_heart(U8G2* disp, const EyeGeom_t* g) {
+    int16_t cx=g->pupil_cx, cy=g->pupil_cy, base_r=g->pupil_r;
+    if (base_r<3) { draw_pupil_normal(disp,g); return; }
+    uint32_t beat_t=millis()%900; float scale=1.0f;
+    if (beat_t<120) { float t=(float)beat_t/120.0f; scale=1.0f+0.35f*sinf(t*M_PI); }
+    else if (beat_t<260) { float t=(float)(beat_t-120)/140.0f; scale=1.0f+0.20f*sinf(t*M_PI); }
+    float sw=1.0f+(scale-1.0f)*0.85f, sh=scale;
+    int16_t rw=(int16_t)((float)base_r*sw), rh=(int16_t)((float)base_r*sh);
+    if (rw<3) rw=3; if (rh<3) rh=3;
+    disp->drawDisc(cx-rw/2,cy-rw/4,rw/2+1,U8G2_DRAW_ALL);
+    disp->drawDisc(cx+rw/2,cy-rw/4,rw/2+1,U8G2_DRAW_ALL);
+    disp->drawBox(cx-rw/2,cy-rw/4,rw,rw/2+1);
+    disp->drawTriangle(cx-rw,cy,cx+rw,cy,cx,cy+rh);
+    disp->drawTriangle(cx-rw+1,cy,cx+rw-1,cy,cx,cy+rh-1);
+}
+
+static void draw_pupil_slit(U8G2* disp, const EyeGeom_t* g) {
+    int16_t sw=g->pupil_r/4; if (sw<1) sw=1;
+    disp->drawBox(g->pupil_cx-sw,g->pupil_cy-g->pupil_r-2,sw*2,g->pupil_r*2+4);
+}
+
+static void draw_pupil_none(U8G2*, const EyeGeom_t*) {}
+
+static void draw_pupil_shock(U8G2* disp, const EyeGeom_t* g) {
+    int16_t cx=g->pupil_cx, cy=g->pupil_cy, r=g->pupil_r;
+    disp->drawCircle(cx,cy,r,U8G2_DRAW_ALL);
+    if (r>3) { disp->setDrawColor(1); disp->drawCircle(cx,cy,r-2,U8G2_DRAW_ALL); disp->setDrawColor(0); }
+    if ((millis()/40)%2==0) {
+        disp->drawLine(cx-6,cy-6,cx-15,cy-15); disp->drawLine(cx+6,cy-6,cx+15,cy-15);
+        disp->drawLine(cx-6,cy+6,cx-15,cy+15); disp->drawLine(cx+6,cy+6,cx+15,cy+15);
+        disp->drawLine(cx-14,cy,cx-8,cy); disp->drawLine(cx+8,cy,cx+14,cy);
+    } else {
+        disp->drawLine(cx-4,cy-7,cx-10,cy-17); disp->drawLine(cx+4,cy-7,cx+10,cy-17);
+        disp->drawLine(cx-4,cy+7,cx-10,cy+17); disp->drawLine(cx+4,cy+7,cx+10,cy+17);
+        disp->drawLine(cx,cy-16,cx,cy-8); disp->drawLine(cx,cy+8,cx,cy+16);
+    }
+}
+
+static void draw_pupil_happy(U8G2* disp, const EyeGeom_t* g) {
+    int16_t cx=g->pupil_cx, cy=g->pupil_cy, r=g->pupil_r;
+    if (r<2) { draw_pupil_normal(disp,g); return; }
+    int16_t uw=r+1;
+    for (int16_t dy=-r;dy<=0;dy++) {
+        float norm=(float)(dy+r)/(float)r, curve=1.0f-norm*norm;
+        int16_t dx=(int16_t)((float)uw*curve*0.55f); if (dx<1) dx=1;
+        disp->drawHLine(cx-dx,cy+dy,dx*2);
+    }
+    for (int16_t dy=1;dy<=r;dy++) {
+        float norm=(float)dy/(float)r, curve=1.0f-norm*norm;
+        int16_t dx=(int16_t)((float)uw*curve*0.45f); if (dx<1) dx=1;
+        disp->drawHLine(cx-dx,cy+dy,dx*2);
+    }
+    { uint32_t star_t=millis()%2500; float alpha=0.0f;
+      if (star_t<75) alpha=(float)star_t/75.0f;
+      else if (star_t<150) alpha=1.0f-(float)(star_t-75)/75.0f;
+      if (alpha>0.01f) { disp->setDrawColor(1); uint8_t ss=(uint8_t)(alpha*3.0f); if (ss<1) ss=1;
+        for (uint8_t s=0;s<ss;s++) { int16_t sx=cx-r+(rand()%(r*2)), sy=cy-r+(rand()%(r*2));
+          int16_t sl=2+(rand()%3); disp->drawHLine(sx-sl,sy,sl*2); disp->drawVLine(sx,sy-sl,sl*2); }
+        disp->setDrawColor(0); } }
+}
+
+static void draw_pupil_star(U8G2* disp, const EyeGeom_t* g) {
+    int16_t cx=g->pupil_cx, cy=g->pupil_cy, r=g->pupil_r;
+    if (r<3) { draw_pupil_normal(disp,g); return; }
+    int16_t cr=r/3; if (cr<2) cr=2; disp->drawDisc(cx,cy,cr,U8G2_DRAW_ALL);
+    int16_t slen=r+2;
+    disp->drawLine(cx,cy-cr,cx,cy-slen); disp->drawLine(cx,cy+cr,cx,cy+slen);
+    disp->drawLine(cx-cr,cy,cx-slen,cy); disp->drawLine(cx+cr,cy,cx+slen,cy);
+    if ((millis()/60)%2==0) { int16_t d=(int16_t)((float)slen*0.7f);
+      disp->drawLine(cx-cr,cy-cr,cx-d,cy-d); disp->drawLine(cx+cr,cy-cr,cx+d,cy-d);
+      disp->drawLine(cx-cr,cy+cr,cx-d,cy+d); disp->drawLine(cx+cr,cy+cr,cx+d,cy+d); }
+}
+
+static const PupilDrawFunc s_pupil_draw[PUPIL_COUNT] = {
+    [PUPIL_NORMAL]=draw_pupil_normal, [PUPIL_HEART]=draw_pupil_heart,
+    [PUPIL_SLIT]=draw_pupil_slit, [PUPIL_NONE]=draw_pupil_none,
+    [PUPIL_SHOCK]=draw_pupil_shock, [PUPIL_HAPPY]=draw_pupil_happy,
+    [PUPIL_STAR]=draw_pupil_star,
+};

@@ -1,6 +1,6 @@
 /**
  * @file    servo_task.h
- * @brief   RobotEyes 舵机控制 Task — 平滑非阻塞插值
+ * @brief   RobotEyes 舵机控制 Task — 平滑非阻塞插值 + 抖动通道
  */
 
 #ifndef SERVO_TASK_H
@@ -26,6 +26,10 @@ void servo_get_target(int8_t* left_deg, int8_t* right_deg);
 
 /* 相对当前目标角度进行偏移 (用于摇杆微调) */
 void servo_add_relative(int8_t left_offset, int8_t right_offset);
+
+/* v9.0: 直接注频抖动, 绕过 SERVO_STEP_DEG 缓动限速 (Angry/Panic) */
+void servo_set_jitter(int8_t left_jitter, int8_t right_jitter);
+
 void servo_task_run(void* pvParameters);
 
 #endif
