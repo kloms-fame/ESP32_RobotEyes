@@ -182,20 +182,35 @@ void eye_draw_lid_mask(U8G2* d, const EyeGeom_t* gm) {
 }
 
 void eye_draw_happy_arc(U8G2* d, const EyeGeom_t* gm) {
-    /* 几何遮罩法: 暗色大圆 + 亮色下偏移圆切割 = 上弦弯月 (暗色眼眶中可见) */
+    /* === 全新设计: 先清空眼眶, 再画亮色上弦弯月弧线 === */
     int16_t cx = gm->eye_l + (gm->eye_r - gm->eye_l) / 2;
-    int16_t cy = gm->eye_t + (gm->eye_b - gm->eye_t) * 7 / 16;
-    int16_t cr = (gm->eye_b - gm->eye_t) * 7 / 12;
-    int16_t off_y = cr * 2 / 5;
+    int16_t cy = gm->eye_t + (gm->eye_b - gm->eye_t) / 2;
+    int16_t eye_w = gm->eye_r - gm->eye_l;
+    int16_t eye_h = gm->eye_b - gm->eye_t;
 
-    /* 步骤1: 暗色实心圆 */
+    /* 步骤1: 暗色大圆覆盖整个眼眶 (擦除亮色 body) */
+    int16_t clear_r = eye_w / 2 + 3;
     d->setDrawColor(0);
-    d->drawDisc(cx, cy, cr, U8G2_DRAW_ALL);
-    /* 步骤2: 亮色实心圆向下偏移 → 切掉下半部 → 留下上弦暗色弯月 */
-    d->setDrawColor(1);
-    d->drawDisc(cx, cy + off_y, cr, U8G2_DRAW_ALL);
+    d->drawDisc(cx, cy, clear_r, U8G2_DRAW_ALL);
 
-    /* 星光粒子随机闪烁 (亮色, 在暗色弯月上可见) */
+    /* 步骤2: 画亮色上弦弯月 — 逐列 VLine 构成向上弯曲的厚弧 */
+    d->setDrawColor(1);
+    int16_t arc_base_y = gm->eye_t + eye_h * 3 / 10;
+    int16_t arc_hw     = eye_w * 3 / 8;
+    int16_t thick      = 4;
+    for (int16_t dx = -arc_hw; dx <= arc_hw; dx++) {
+        float t = (float)abs(dx) / (float)arc_hw;
+        int16_t rise = (int16_t)(5.0f * t * t);
+        int16_t y0 = arc_base_y - rise - thick / 2;
+        if (y0 < gm->eye_t) y0 = gm->eye_t;
+        d->drawVLine(cx + dx, y0, thick);
+    }
+
+    /* 步骤3: 弯月两端加圆头 */
+    d->drawDisc(cx - arc_hw, arc_base_y - 5, 2, U8G2_DRAW_ALL);
+    d->drawDisc(cx + arc_hw, arc_base_y - 5, 2, U8G2_DRAW_ALL);
+
+    /* 步骤4: 星光粒子随机闪烁 */
     uint32_t star_t = millis() % 1500;
     float alpha = 0.0f;
     if (star_t < 100) alpha = (float)star_t / 100.0f;
@@ -203,11 +218,11 @@ void eye_draw_happy_arc(U8G2* d, const EyeGeom_t* gm) {
 
     if (alpha > 0.05f) {
         d->setDrawColor(1);
-        uint8_t cnt = (uint8_t)(alpha * 5.0f);
-        if (cnt < 1) cnt = 1; if (cnt > 4) cnt = 4;
+        uint8_t cnt = (uint8_t)(alpha * 4.0f);
+        if (cnt < 1) cnt = 1; if (cnt > 3) cnt = 3;
         for (uint8_t s = 0; s < cnt; s++) {
-            int16_t sx = gm->eye_l + 4 + (rand() % (gm->eye_r - gm->eye_l - 8));
-            int16_t sy = gm->eye_t + 4 + (rand() % (gm->eye_b - gm->eye_t - 8));
+            int16_t sx = gm->eye_l + 6 + (rand() % (eye_w - 12));
+            int16_t sy = gm->eye_t + eye_h * 1 / 3 + (rand() % (eye_h * 2 / 3));
             int16_t sl = 2 + (rand() % 3);
             d->drawHLine(sx - sl, sy, sl * 2);
             d->drawVLine(sx, sy - sl, sl * 2);
@@ -215,7 +230,6 @@ void eye_draw_happy_arc(U8G2* d, const EyeGeom_t* gm) {
     }
     d->setDrawColor(1);
 }
-
 static void eye_draw_tears(U8G2* d, const EyeGeom_t* gm) {
     int16_t pcx = gm->pupil_cx, pcy = gm->pupil_cy, pr = gm->pupil_r;
     int16_t toy = gm->eye_b - gm->lid_bottom_h; if (toy < pcy + pr) toy = pcy + pr;
@@ -414,7 +428,7 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
             cfg->brow_offset_r = (int16_t)(-t * 15.0f);
             cfg->sleepy_struggle_sub = 3;
         }
-        cfg->target_lid_top = cfg->sleepy_lid;
+        cfg->target_lid_top   = cfg->sleepy_lid; cfg->target_lid_top_l = cfg->sleepy_lid; cfg->target_lid_top_r = cfg->sleepy_lid;
     }
     /* ---- [6] Panic: 高频乱颤扫视 (50~100ms) + 大幅漂移 + 瞳孔抖动 ---- */
     if (cfg->active_expr == 6) {

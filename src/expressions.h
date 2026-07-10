@@ -125,11 +125,7 @@ static const ExpressionDef_t EXPRESSIONS[8] = {
       false, 0.0f, 0 },
 
     /* [5] Sleepy — 抗拒困意状态机: 闭眼皱眉→惊醒弹开 (v10: 眉毛联动) */
-    { "Sleepy",
-      0.55f, 0.0f, 0.0f,  0.05f, 0.0f,
-      PUPIL_NORMAL, 0.60f,  0.0f, 0,
-      SYM_L(-18), SYM_R(-18),
-      BROW_ANIM_NONE, 0.0f, 0.0f, 0.0f, 0.0f, 0,
+    { "Sleepy", 0.55f, 0.55f, 0.55f,  0.05f, 0.0f, PUPIL_NORMAL, 0.60f,  0.0f, 0, SYM_L(-18), SYM_R(-18), BROW_ANIM_NONE, 0.0f, 0.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
     /* [6] Panic — 极度慌张: 无规律乱颤 + 急促扫视 + 大汗珠 */
