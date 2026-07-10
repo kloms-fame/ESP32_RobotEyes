@@ -1,14 +1,19 @@
 /**
  * @file    expressions.h
- * @brief   RobotEyes 8 大灵魂微表情 v9.0 — 参数化眉毛动画引擎 + 泪滴坐标映射
+ * @brief   RobotEyes 8 大灵魂微表情 v10.0 — 参数化眉毛动画引擎 + 泪滴坐标映射
  *
- *  v9.0 关键升级:
- *    - 新增 BROW_ANIM_SWAY (Surprised 左右反相摇摆)
- *    - 新增 BROW_ANIM_PANIC (Panic 高频颤抖)
- *    - Skeptic[6] 替换为 Panic (恐慌)
- *    - Excited[7] pupil_type → PUPIL_HEART (双相心跳)
- *    - Sleepy[5] brow_anim → NONE (眉毛由专属节律控制)
- *    - Surprised[4] brow_anim → SWAY (左右反相摇摆)
+ *  v10.0 关键升级:
+ *    - 【核心修复】brow_left/right 从 int8_t 升级为 int16_t
+ *      int8_t 最大127, Angry SYM_L(-45)=135 溢出为-121 → 镜像崩塌!
+ *    - SYM_L/SYM_R 宏同步升级 int16_t
+ *    - 表情参数大规模调优 (视觉冲击力重构)
+ *    - Happy: 弯月笑眼 + 高频星星粒子 + 弹跳眉毛
+ *    - Angry: int16_t修复后 \ / 镜像正确 + 高频颤抖
+ *    - Sad: 汪汪泪眼 大泪珠 + 眼角抽泣 + 水光反射
+ *    - Surprised: 高频大小眼交替跳动 + 眉毛跷跷板摇摆
+ *    - Sleepy: 抗拒困意状态机 (闭眼皱眉→惊醒弹开 眉毛联动)
+ *    - Panic: 极度慌张 无规律乱颤 + 急促扫视 + 大汗珠
+ *    - Excited: 超大爱心瞳孔 + 双相心跳(lub-dub)
  */
 
 #ifndef EXPRESSIONS_H
@@ -33,7 +38,7 @@ typedef enum {
 } BrowAnimation_t;
 
 /* ================================================================
- *  ExpressionDef_t — 表情定义 (参数化眉毛动画)
+ *  ExpressionDef_t — 表情定义 (v10: int16_t 防溢出)
  * ================================================================ */
 typedef struct {
     const char*     name;
@@ -51,11 +56,11 @@ typedef struct {
     float           anim_peak;      /* 动画峰值缩放 (0=无动画) */
     uint16_t        anim_ms;        /* 动画持续时间 (ms) */
 
-    /* ---- 眉毛静态角度 ---- */
-    int8_t          brow_left;      /* 左眉基础角度 */
-    int8_t          brow_right;     /* 右眉基础角度 */
+    /* ---- 眉毛静态角度 (v10: int16_t 防溢出, 支持0-180全范围) ---- */
+    int16_t         brow_left;      /* 左眉基础角度 */
+    int16_t         brow_right;     /* 右眉基础角度 */
 
-    /* ---- 眉毛动画参数 (v8.0) ---- */
+    /* ---- 眉毛动画参数 ---- */
     BrowAnimation_t brow_anim;          /* 动画类型 */
     float           brow_freq;          /* 基频 (弧度/帧) */
     float           brow_amp;           /* 振幅 (度) */
@@ -63,18 +68,19 @@ typedef struct {
     float           brow_burst_amp;     /* 爆发振幅 (TREMBLE) */
     uint16_t        brow_burst_intv;    /* 爆发间隔 ms (TREMBLE) */
 
-    /* ---- 泪滴参数 (v8.0) ---- */
+    /* ---- 泪滴参数 ---- */
     bool            tear_enabled;       /* 启用泪滴 */
     float           tear_rate;          /* 滑落速率 (px/ms) */
     uint8_t         tear_spacing;       /* 双泪滴初始间距 (px) */
 } ExpressionDef_t;
 
 #define BROW_CENTER  90
-#define SYM_L(offset)  ((int8_t)(BROW_CENTER - (offset)))
-#define SYM_R(offset)  ((int8_t)(BROW_CENTER + (offset)))
+/* v10: int16_t 强制转换, 防溢出! int8_t最大127, 135会溢出为-121 */
+#define SYM_L(offset)  ((int16_t)(BROW_CENTER - (offset)))
+#define SYM_R(offset)  ((int16_t)(BROW_CENTER + (offset)))
 
 /* ================================================================
- *  8 大灵魂微表情表 v9.0
+ *  8 大灵魂微表情表 v10.0 (视觉冲击力极致重构)
  * ================================================================ */
 static const ExpressionDef_t EXPRESSIONS[8] = {
 
@@ -86,60 +92,60 @@ static const ExpressionDef_t EXPRESSIONS[8] = {
       BROW_ANIM_BREATHE, 0.018f, 2.5f, 0.25f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [1] Happy — 极致开心 弯月笑眼 + 弹跳眉毛 */
+    /* [1] Happy — 弯月笑眼 + 高频星星粒子 + 弹跳眉毛 */
     { "Happy",
-      0.22f, 0.0f, 0.0f,  0.85f, 0.25f,
-      PUPIL_HAPPY, 1.15f,  2.5f, 400,
-      SYM_L(45), SYM_R(45),
-      BROW_ANIM_RAISE_BOUNCE, 0.05f, 12.0f, 0.0f, 0.0f, 0,
+      0.30f, 0.0f, 0.0f,  0.75f, 0.20f,
+      PUPIL_HAPPY, 1.05f,  2.0f, 380,
+      SYM_L(50), SYM_R(50),
+      BROW_ANIM_RAISE_BOUNCE, 0.05f, 14.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [2] Angry — 极致凶狠 吊梢眼 + 抽动式震颤 */
+    /* [2] Angry — 倒八字眉 \ / 高频颤抖 + 竖缝瞳孔 (v10: int16_t修复镜像) */
     { "Angry",
-      0.35f, 0.0f, 0.0f,  0.12f, 1.15f,
-      PUPIL_SLIT, 0.55f,  0.30f, 250,
+      0.28f, 0.0f, 0.0f,  0.10f, 0.85f,
+      PUPIL_SLIT, 0.50f,  0.35f, 220,
       SYM_L(-45), SYM_R(-45),
-      BROW_ANIM_TREMBLE, 0.18f, 3.5f, 0.6f, 10.0f, 600,
+      BROW_ANIM_TREMBLE, 0.22f, 4.5f, 0.55f, 12.0f, 500,
       false, 0.0f, 0 },
 
-    /* [3] Sad — 汪洋泪海 T_T 多层泪水 */
+    /* [3] Sad — 汪汪泪眼 大泪珠 + 眼角抽泣 + 水光反射 */
     { "Sad",
-      0.15f, 0.0f, 0.0f,  0.32f, -0.75f,
-      PUPIL_NORMAL, 1.5f,  2.2f, 500,
-      SYM_L(25), SYM_R(25),
-      BROW_ANIM_SOB, 0.010f, 3.0f, 1.2f, 0.0f, 0,
-      true, 0.012f, 16 },
+      0.12f, 0.0f, 0.0f,  0.35f, -0.85f,
+      PUPIL_NORMAL, 1.6f,  2.5f, 600,
+      SYM_L(28), SYM_R(28),
+      BROW_ANIM_SOB, 0.008f, 3.5f, 1.4f, 0.0f, 0,
+      true, 0.018f, 20 },
 
-    /* [4] Surprised — 四阶段大小眼交替 O_O (v9.0: SWAY 摇摆) */
+    /* [4] Surprised — 高频大小眼交替跳动 + 眉毛跷跷板摇摆 */
     { "Surprised",
-      0.0f, 0.0f, 0.0f,  -0.12f, 0.0f,
-      PUPIL_SHOCK, 1.0f,  0.25f, 350,
-      SYM_L(55), SYM_R(55),
-      BROW_ANIM_SWAY, 0.05f, 8.0f, 0.0f, 0.0f, 0,
+      0.0f, 0.0f, 0.0f,  -0.15f, 0.0f,
+      PUPIL_SHOCK, 1.0f,  0.30f, 300,
+      SYM_L(58), SYM_R(58),
+      BROW_ANIM_SWAY, 0.06f, 10.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [5] Sleepy — 四秒打瞌睡循环 (v9.0: 眉毛专属节律, NONE避开通用引擎) */
+    /* [5] Sleepy — 抗拒困意状态机: 闭眼皱眉→惊醒弹开 (v10: 眉毛联动) */
     { "Sleepy",
-      0.60f, 0.0f, 0.0f,  0.05f, 0.0f,
-      PUPIL_NORMAL, 0.65f,  0.0f, 0,
-      SYM_L(-15), SYM_R(-15),
+      0.55f, 0.0f, 0.0f,  0.05f, 0.0f,
+      PUPIL_NORMAL, 0.60f,  0.0f, 0,
+      SYM_L(-18), SYM_R(-18),
       BROW_ANIM_NONE, 0.0f, 0.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [6] Panic — 恐慌 (v9.0: 替换 Skeptic) 急促呼吸式瞳孔 + 高频扫视 */
+    /* [6] Panic — 极度慌张: 无规律乱颤 + 急促扫视 + 大汗珠 */
     { "Panic",
-      0.05f, 0.0f, 0.0f,  0.10f, 0.0f,
-      PUPIL_NORMAL, 0.75f,  0.0f, 0,
-      SYM_L(35), SYM_R(35),
-      BROW_ANIM_TREMBLE, 0.22f, 2.5f, 0.5f, 4.0f, 350,
+      0.02f, 0.0f, 0.0f,  0.08f, 0.0f,
+      PUPIL_NORMAL, 0.65f,  0.0f, 0,
+      SYM_L(38), SYM_R(38),
+      BROW_ANIM_TREMBLE, 0.25f, 3.0f, 0.45f, 5.0f, 300,
       false, 0.0f, 0 },
 
-    /* [7] Excited — 爱心眼 双相心跳 (v9.0: HEART 代替 STAR) */
+    /* [7] Excited — 超大爱心瞳孔 + 双相心跳(lub-dub) + 弹跳眉毛 */
     { "Excited",
       0.0f, 0.0f, 0.0f,  0.0f, 0.0f,
       PUPIL_HEART, 1.0f,  0.0f, 0,
-      SYM_L(40), SYM_R(40),
-      BROW_ANIM_RAISE_BOUNCE, 0.07f, 8.0f, 0.0f, 0.0f, 0,
+      SYM_L(45), SYM_R(45),
+      BROW_ANIM_RAISE_BOUNCE, 0.08f, 10.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 };
 

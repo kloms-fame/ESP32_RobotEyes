@@ -1,10 +1,15 @@
 /**
  * @file    servo_task.cpp
- * @brief   RobotEyes 舵机控制 Task 实现 v9.0 — 非阻塞步进 + 独立抖动通道
+ * @brief   RobotEyes 舵机控制 Task 实现 v10.0 — int16_t 全链路 + 非阻塞步进 + 独立抖动通道
  *
  *  使用 ESP32Servo 库 (LGPL-2.1)
  *  非阻塞步进: 每 20ms 向目标移动 SERVO_STEP_DEG 度
  *  抖动通道: servo_set_jitter() 直接叠加到 write() 输出, 绕过缓动
+ *
+ *  v10.0 关键修复:
+ *    - 所有角度变量 int8_t → int16_t
+ *    - int8_t 最多存储 127, Angry 左眉 135deg 溢出为 -121
+ *    - int16_t 支持 0-180 全范围无溢出
  */
 
 #include "servo_task.h"
@@ -17,14 +22,15 @@ TaskHandle_t g_servoTaskHandle = NULL;
 static Servo g_servo_left;
 static Servo g_servo_right;
 
-static volatile int8_t g_target_left  = SERVO_CENTER_DEG;
-static volatile int8_t g_target_right = SERVO_CENTER_DEG;
+/* v10: int8_t → int16_t */
+static volatile int16_t g_target_left  = SERVO_CENTER_DEG;
+static volatile int16_t g_target_right = SERVO_CENTER_DEG;
 
-static volatile int8_t g_jitter_left  = 0;
-static volatile int8_t g_jitter_right = 0;
+static volatile int16_t g_jitter_left  = 0;
+static volatile int16_t g_jitter_right = 0;
 
-static int8_t g_current_left  = SERVO_CENTER_DEG;
-static int8_t g_current_right = SERVO_CENTER_DEG;
+static int16_t g_current_left  = SERVO_CENTER_DEG;
+static int16_t g_current_right = SERVO_CENTER_DEG;
 
 /* ================================================================
  *  servo_task_init()
@@ -47,14 +53,13 @@ void servo_task_init(void) {
     g_jitter_left   = 0;
     g_jitter_right  = 0;
 
-    Serial.println(F("[SERVO] Init done. Center=90 deg, jitter=0"));
+    Serial.println(F("[SERVO] Init done. Center=90 deg (v10: int16_t)"));
 }
 
 /* ================================================================
- *  servo_set_target() — 线程安全设置目标角度
+ *  servo_set_target() — 线程安全设置目标角度 (v10: int16_t)
  * ================================================================ */
-void servo_set_target(int8_t left_deg, int8_t right_deg) {
-    /* 钳位 */
+void servo_set_target(int16_t left_deg, int16_t right_deg) {
     if (left_deg  < SERVO_MIN_DEG) left_deg  = SERVO_MIN_DEG;
     if (left_deg  > SERVO_MAX_DEG) left_deg  = SERVO_MAX_DEG;
     if (right_deg < SERVO_MIN_DEG) right_deg = SERVO_MIN_DEG;
@@ -65,29 +70,25 @@ void servo_set_target(int8_t left_deg, int8_t right_deg) {
 }
 
 /* ================================================================
- *  servo_get_target() — 读取当前目标角度
+ *  servo_get_target() — 读取当前目标角度 (v10: int16_t)
  * ================================================================ */
-void servo_get_target(int8_t* left_deg, int8_t* right_deg) {
+void servo_get_target(int16_t* left_deg, int16_t* right_deg) {
     *left_deg  = g_target_left;
     *right_deg = g_target_right;
 }
 
 /* ================================================================
- *  servo_add_relative() — 相对当前目标角度偏移
+ *  servo_add_relative() — 相对当前目标角度偏移 (v10: int16_t)
  * ================================================================ */
-void servo_add_relative(int8_t left_offset, int8_t right_offset) {
+void servo_add_relative(int16_t left_offset, int16_t right_offset) {
     servo_set_target(g_target_left + left_offset,
                      g_target_right + right_offset);
 }
 
 /* ================================================================
- *  servo_set_jitter() — v9.0: 直接注频抖动
- *
- *  调用后下一帧 servo_task_run 直接叠加到 write() 输出,
- *  不经过 SERVO_STEP_DEG 缓动限速。
- *  传 (0, 0) 关闭抖动。
+ *  servo_set_jitter() — v10: 直接注频抖动 (int16_t)
  * ================================================================ */
-void servo_set_jitter(int8_t left_jitter, int8_t right_jitter) {
+void servo_set_jitter(int16_t left_jitter, int16_t right_jitter) {
     g_jitter_left  = left_jitter;
     g_jitter_right = right_jitter;
 }
@@ -105,10 +106,10 @@ void servo_task_run(void* pvParameters) {
     TickType_t last_wake = xTaskGetTickCount();
 
     for (;;) {
-        int8_t cur_l  = g_current_left;
-        int8_t cur_r  = g_current_right;
-        int8_t tgt_l  = g_target_left;
-        int8_t tgt_r  = g_target_right;
+        int16_t cur_l  = g_current_left;
+        int16_t cur_r  = g_current_right;
+        int16_t tgt_l  = g_target_left;
+        int16_t tgt_r  = g_target_right;
 
         /* 左舵机步进 */
         if (cur_l < tgt_l) {
@@ -128,9 +129,9 @@ void servo_task_run(void* pvParameters) {
             if (cur_r < tgt_r) cur_r = tgt_r;
         }
 
-        /* v9.0: 叠加抖动 (绕过缓动, 直接加到输出) */
-        int8_t out_l = cur_l + g_jitter_left;
-        int8_t out_r = cur_r + g_jitter_right;
+        /* v10: 叠加抖动 (绕过缓动, 直接加到输出) */
+        int16_t out_l = cur_l + g_jitter_left;
+        int16_t out_r = cur_r + g_jitter_right;
 
         /* 钳位保护硬件 */
         if (out_l < SERVO_MIN_DEG) out_l = SERVO_MIN_DEG;

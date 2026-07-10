@@ -1,6 +1,6 @@
 /**
  * @file    eye_renderer.h
- * @brief   RobotEyes 眼型渲染 v9.0 — OCP 解耦管线
+ * @brief   RobotEyes 眼型渲染 v10.0 — OCP 解耦管线 (int16_t 全链路)
  * @author  Rennick (AI 辅助开发)
  * @date    2026-07-10
  *
@@ -14,9 +14,13 @@
  *  OCP: 新增瞳孔类型 = 新增 draw 函数 + 注册分派表, 核心管线零修改
  *  OCP: 新增风格 = 新增 EyeStyle_t 常量 (宏切换)
  *
- *  v9.0 新增:
- *    - EyeConfig_t 新增 happy_wink / panic_scan / surprised 字段
- *    - eye_draw_sweat() 恐慌冷汗特效
+ *  v10.0 关键升级:
+ *    - brow_offset_l/r int8_t → int16_t (防溢出, 配合舵机全链路)
+ *    - 新增 sad_water_phase (Sad 水光反射动画)
+ *    - 新增 panic_sweat_seed (Panic 冷汗随机种子)
+ *    - 新增 sleepy_struggle_phase (Sleepy 抗拒困意子状态)
+ *    - Happy 弯月笑眼弧形遮罩 #define
+ *    - Excited 双相心跳 lub-dub 节律
  */
 
 #ifndef EYE_RENDERER_H
@@ -29,8 +33,6 @@
  *  风格选择 (OCP: 宏切换, 不改管线)
  * ================================================================ */
 #define EYE_STYLE_A   /* 动漫星瞳: 56x44 */
-// #define EYE_STYLE_B   /* 委屈修勾: 46x32 */
-// #define EYE_STYLE_C   /* 傲娇小兽: 40x36 */
 
 #if !defined(EYE_STYLE_A) && !defined(EYE_STYLE_B) && !defined(EYE_STYLE_C)
 #define EYE_STYLE_A
@@ -45,7 +47,7 @@ typedef enum {
     PUPIL_SLIT,         /* 竖缝瞳孔 (愤怒/野兽) */
     PUPIL_NONE,         /* 无瞳孔 (翻白眼) */
     PUPIL_SHOCK,        /* 中空圆环 + 电波线 (震惊) */
-    PUPIL_HAPPY,        /* 笑形 >< 眯眼 */
+    PUPIL_HAPPY,        /* 弯月笑眼 >< 弧形 (v10: 重构) */
     PUPIL_STAR,         /* 四角星星 sparkle (兴奋) */
     PUPIL_COUNT          /* 类型总数 (用于分派表) */
 } PupilType_t;
@@ -115,7 +117,7 @@ typedef struct {
 } EyeGeom_t;
 
 /* ================================================================
- *  EyeConfig_t — 运行时状态 v9.0
+ *  EyeConfig_t — 运行时状态 v10.0
  * ================================================================ */
 typedef struct {
     uint8_t cx, cy;           /* 眼睛中心坐标 */
@@ -132,18 +134,19 @@ typedef struct {
     float        target_lid_top_r;
     float        target_lid_bottom;
     float        target_lid_slope;
-    float        target_pupil_scale;
     PupilType_t  target_pupil_type;
-    PupilType_t  cur_pupil_type;
+    float        target_pupil_scale;
 
+    /* 当前渐变值 */
     float   cur_lid_top;
     float   cur_lid_top_l;
     float   cur_lid_top_r;
     float   cur_lid_bottom;
     float   cur_lid_slope;
     float   cur_pupil_scale;
+    PupilType_t cur_pupil_type;
 
-    /* 特殊动画 */
+    /* 峰值动画回弹 */
     float    anim_peak_scale;
     uint32_t anim_start_ms;
     uint16_t anim_duration_ms;
@@ -151,54 +154,54 @@ typedef struct {
     /* Sleepy 瞌睡引擎 */
     uint32_t sleepy_phase_ms;
     float    sleepy_lid;
+    uint8_t  sleepy_struggle_sub;  /* v10: 抗拒困意子阶段 0=闭眼 1=惊醒 2=挣扎 */
 
-    /* 眉毛微动引擎 (v7.0: 参数化) */
-    float    brow_phase;           /* 通用动画相位 (弧度) */
-    float    brow_angry_phase;     /* Angry 震颤相位 (保留兼容) */
-    float    brow_burst_timer;     /* Angry 爆发计时器 (保留兼容) */
-    float    brow_anim_phase;      /* 表情特定动画相位 (v7.0) */
-    int8_t   brow_offset_l;        /* 左眉当前微动偏移 */
-    int8_t   brow_offset_r;        /* 右眉当前微动偏移 */
+    /* 眉毛微动引擎 (v10: int16_t 防溢出) */
+    float    brow_phase;
+    float    brow_angry_phase;
+    float    brow_burst_timer;
+    float    brow_anim_phase;
+    int16_t  brow_offset_l;        /* v10: int8_t → int16_t */
+    int16_t  brow_offset_r;        /* v10: int8_t → int16_t */
 
-    /* 泪滴动画 (v7.0) */
-    uint32_t tear_phase_ms;        /* 泪滴动画计时器 */
-    uint32_t tear_phase2_ms;       /* 第二滴泪相位偏移 */
+    /* 泪滴动画 */
+    uint32_t tear_phase_ms;
+    uint32_t tear_phase2_ms;
+    uint32_t sad_water_phase_ms;   /* v10: Sad 水光反射相位 */
 
-    /* ---- v8.0 分层动画架构 ---- */
+    /* ---- 分层动画架构 ---- */
 
-    /* 注意力层: 自主视线漂移 */
-    uint32_t attention_next_ms;    /* 下次注意力移动时刻 */
-    int8_t   attention_target_x;   /* 注意力目标 X */
-    int8_t   attention_target_y;   /* 注意力目标 Y */
-    int8_t   attention_prev_x;     /* 注意力起点 X (用于平滑) */
-    int8_t   attention_prev_y;     /* 注意力起点 Y */
-    uint8_t  attention_phase;      /* 0=idle, 1=moving, 2=holding, 3=returning */
+    /* 注意力层 */
+    uint32_t attention_next_ms;
+    int8_t   attention_target_x;
+    int8_t   attention_target_y;
+    int8_t   attention_prev_x;
+    int8_t   attention_prev_y;
+    uint8_t  attention_phase;
 
-    /* 二级运动: overshoot/decay */
-    float    overdrive_decay;      /* 过冲衰减系数 (0=无) */
-    float    overdrive_amount;     /* 过冲幅度 */
+    /* 二级运动 */
+    float    overdrive_decay;
+    float    overdrive_amount;
 
     /* 随机怠速微动作 */
-    uint32_t idle_micro_next_ms;   /* 下次微动作时刻 */
-    uint8_t  idle_micro_type;      /* 0=none, 1=pupil_scale, 2=brow_twitch, 3=lid_flutter */
-    float    idle_micro_lid_delta; /* 眼皮微动幅度 */
-    float    idle_micro_pupil_delta;/* 瞳孔缩放幅度 */
+    uint32_t idle_micro_next_ms;
+    uint8_t  idle_micro_type;
+    float    idle_micro_lid_delta;
+    float    idle_micro_pupil_delta;
 
-    /* ---- v9.0 新增字段 ---- */
+    /* ---- v10.0 专属动画字段 ---- */
 
     /* Happy 单眼快眨 */
-    uint32_t happy_wink_next_ms;   /* 下次快眨时刻 */
-    uint8_t  happy_wink_eye;       /* 0=无, 1=左眼, 2=右眼 */
-    uint32_t happy_wink_start_ms;  /* 快眨开始时刻 */
+    uint32_t happy_wink_next_ms;
+    uint8_t  happy_wink_eye;
+    uint32_t happy_wink_start_ms;
 
     /* Panic 恐慌眼球扫视 */
-    uint32_t panic_scan_next_ms;   /* 下次扫视时刻 */
+    uint32_t panic_scan_next_ms;
+    uint8_t  panic_sweat_seed;     /* v10: 冷汗绘制随机种子 */
 
-    /* Excited 心跳缩放 (通过 millis() 直接计算, 不依赖 anim_peak) */
-    /* (无额外字段, 在 eye_expr_update 中直接使用 millis()) */
-
-    /* Surprised 四阶段大小眼 (通过 millis() 在 eye_expr_update 中计算) */
-    /* (无额外字段, 在 eye_expr_update 中直接计算) */
+    /* Excited 心跳节律 */
+    uint32_t excited_heartbeat_ms; /* v10: 心跳计时起点 */
 } EyeConfig_t;
 
 /* ================================================================
@@ -231,26 +234,23 @@ typedef struct {
  *  公开 API
  * ================================================================ */
 
-/* ---- 获取当前激活的风格 ---- */
 const EyeStyle_t* eye_style_get(void);
 
-/* ---- 几何计算 (纯函数, 无副作用) ---- */
 void eye_geom_compute(EyeGeom_t* geom,
                       const EyeConfig_t* cfg,
                       const EyeStyle_t* style,
                       bool is_left);
 
-/* ---- 分阶段绘制 (只读 geom, 只写 disp) ---- */
 void eye_draw_body(U8G2* disp, const EyeGeom_t* geom);
 void eye_draw_pupil(U8G2* disp, const EyeGeom_t* geom);
 void eye_draw_shine(U8G2* disp, const EyeGeom_t* geom);
 void eye_draw_lid_mask(U8G2* disp, const EyeGeom_t* geom);
-void eye_draw_sweat(U8G2* disp, const EyeGeom_t* geom);  /* v9.0: Panic 冷汗 */
+void eye_draw_sweat(U8G2* disp, const EyeGeom_t* geom);       /* Panic 冷汗 */
+void eye_draw_happy_arc(U8G2* disp, const EyeGeom_t* geom);   /* v10: Happy 弯月弧形 */
+void eye_draw_sad_water(U8G2* disp, const EyeGeom_t* geom);   /* v10: Sad 水光反射 */
 
-/* ---- 渲染入口 (组装管线) ---- */
 void eye_render(U8G2* disp, EyeConfig_t* cfg, bool is_left);
 
-/* ---- 配置 & 状态 API (保持兼容) ---- */
 void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy);
 void eye_set_look(EyeConfig_t* cfg, int8_t x, int8_t y);
 void eye_look_update(EyeConfig_t* cfg);
@@ -260,7 +260,6 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms);
 void blink_state_init(BlinkState_t* state);
 void blink_state_update(BlinkState_t* state, EyeConfig_t* cfg, uint32_t now_ms);
 
-/* ---- v8.0 分层动画 API ---- */
 void eye_attention_update(EyeConfig_t* cfg, uint32_t now_ms);
 void eye_idle_micro_update(EyeConfig_t* cfg, uint32_t now_ms);
 
