@@ -1,6 +1,6 @@
  
 # RobotEyes v6.1 完整源码汇总 
-导出时间：周五 2026/07/10 10:06:58.20 
+导出时间：周五 2026/07/10 10:40:34.52 
 包含文件：*.h + *.cpp 
  
 ## 完整目录树 
@@ -182,12 +182,8 @@ static const ExpressionDef_t EXPRESSIONS[8] = {
       BROW_ANIM_BREATHE, 0.018f, 2.5f, 0.25f, 0.0f, 0,
       false, 0.0f, 0 },
 
-    /* [1] Happy — 弯月笑眼 + 高频星星粒子 + 弹跳眉毛 */
-    { "Happy",
-      0.30f, 0.0f, 0.0f,  0.75f, 0.20f,
-      PUPIL_HAPPY, 1.05f,  2.0f, 380,
-      SYM_L(50), SYM_R(50),
-      BROW_ANIM_RAISE_BOUNCE, 0.05f, 14.0f, 0.0f, 0.0f, 0,
+    /* [1] Smirk — 滑稽笑: 左眼半闭斜视 + 右眼狡黠大眼 + 眉毛不对称 */
+    { "Smirk",  0.0f, 0.50f, 0.08f,  0.22f, -0.18f, PUPIL_NORMAL, 0.70f,  1.5f, 350, SYM_L(55), SYM_R(20), BROW_ANIM_TWITCH, 0.03f, 7.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
     /* [2] Angry — 倒八字眉 \ / 高频颤抖 + 竖缝瞳孔 (v10: int16_t修复镜像) */
@@ -209,17 +205,13 @@ static const ExpressionDef_t EXPRESSIONS[8] = {
     /* [4] Surprised — 高频大小眼交替跳动 + 眉毛跷跷板摇摆 */
     { "Surprised",
       0.0f, 0.0f, 0.0f,  -0.15f, 0.0f,
-      PUPIL_SHOCK, 1.0f,  0.30f, 300,
+      PUPIL_SHOCK, 1.30f,  0.30f, 300,
       SYM_L(58), SYM_R(58),
       BROW_ANIM_SWAY, 0.06f, 10.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
     /* [5] Sleepy — 抗拒困意状态机: 闭眼皱眉→惊醒弹开 (v10: 眉毛联动) */
-    { "Sleepy",
-      0.55f, 0.0f, 0.0f,  0.05f, 0.0f,
-      PUPIL_NORMAL, 0.60f,  0.0f, 0,
-      SYM_L(-18), SYM_R(-18),
-      BROW_ANIM_NONE, 0.0f, 0.0f, 0.0f, 0.0f, 0,
+    { "Sleepy", 0.55f, 0.55f, 0.55f,  0.05f, 0.0f, PUPIL_NORMAL, 0.60f,  0.0f, 0, SYM_L(-18), SYM_R(-18), BROW_ANIM_NONE, 0.0f, 0.0f, 0.0f, 0.0f, 0,
       false, 0.0f, 0 },
 
     /* [6] Panic — 极度慌张: 无规律乱颤 + 急促扫视 + 大汗珠 */
@@ -395,15 +387,14 @@ typedef struct {
     float        target_lid_bottom;
     float        target_lid_slope;
     PupilType_t  target_pupil_type;
-    float        target_pupil_scale;
-
+    float        target_pupil_scale; float target_pupil_scale_r;
     /* 当前渐变值 */
     float   cur_lid_top;
     float   cur_lid_top_l;
     float   cur_lid_top_r;
     float   cur_lid_bottom;
     float   cur_lid_slope;
-    float   cur_pupil_scale;
+    float   cur_pupil_scale; float cur_pupil_scale_r;
     PupilType_t cur_pupil_type;
 
     /* 峰值动画回弹 */
@@ -707,11 +698,22 @@ static void draw_pupil_normal(U8G2* d, const EyeGeom_t* g) {
 static void draw_pupil_heart(U8G2* d, const EyeGeom_t* g) {
     int16_t cx = g->pupil_cx, cy = g->pupil_cy, br = g->pupil_r;
     if (br < 2) { draw_pupil_normal(d, g); return; }
+    /* 双相心跳 "咚-哒-停" lub-dub-pause 节律: 峰值 1.65x */
     uint32_t bt = millis() % 900; float s = 1.0f;
-    if (bt < 120) { float t = (float)bt / 120.0f; s = 1.0f + 0.55f * sinf(t * M_PI); }
-    else if (bt < 260) { float t = (float)(bt - 120) / 140.0f; s = 1.0f + 0.30f * sinf(t * M_PI); }
-    else if (bt < 380) { float t = (float)(bt - 260) / 120.0f; s = 1.0f + 0.50f * sinf(t * M_PI); }
-    float sw = 1.0f + (s - 1.0f) * 0.80f; float sh = s;
+    if (bt < 100) {           /* "咚" lub — 急速放大至 1.65x */
+        float t = (float)bt / 100.0f;
+        s = 1.0f + 0.65f * sinf(t * M_PI);
+    } else if (bt < 240) {    /* "哒" dub — 回弹 1.30x */
+        float t = (float)(bt - 100) / 140.0f;
+        s = 1.0f + 0.30f * sinf(t * M_PI);
+    } else if (bt < 360) {    /* 二次收缩 1.50x */
+        float t = (float)(bt - 240) / 120.0f;
+        s = 1.0f + 0.50f * sinf(t * M_PI);
+    }
+    /* 360~900ms: 静止 (s=1.0) */
+
+    float sw = 1.0f + (s - 1.0f) * 0.85f;
+    float sh = s;
     int16_t rw = (int16_t)((float)br * sw), rh = (int16_t)((float)br * sh);
     if (rw < 4) rw = 4; if (rh < 4) rh = 4;
     int16_t lr = rw / 2;
@@ -720,7 +722,13 @@ static void draw_pupil_heart(U8G2* d, const EyeGeom_t* g) {
     d->drawBox(cx - lr, cy - lr / 2 + 1, rw, rw / 2);
     d->drawTriangle(cx - rw, cy, cx + rw, cy, cx, cy + rh);
     if (rw > 5) d->drawTriangle(cx - rw + 2, cy, cx + rw - 2, cy, cx, cy + rh - 2);
-    if (s > 1.15f) { d->setDrawColor(1); d->drawDisc(cx - lr + 2, cy - lr / 2 - 2, 2, U8G2_DRAW_ALL); d->setDrawColor(0); }
+    /* 心跳高潮闪光 (放大到 1.20x 以上时) */
+    if (s > 1.20f) {
+        d->setDrawColor(1);
+        d->drawDisc(cx - lr + 2, cy - lr / 2 - 2, 3, U8G2_DRAW_ALL);
+        d->drawDisc(cx + lr - 2, cy - lr / 2 - 2, 2, U8G2_DRAW_ALL);
+        d->setDrawColor(0);
+    }
 }
 
 static void draw_pupil_slit(U8G2* d, const EyeGeom_t* g) {
@@ -748,17 +756,24 @@ static void draw_pupil_shock(U8G2* d, const EyeGeom_t* g) {
 }
 
 static void draw_pupil_happy(U8G2* d, const EyeGeom_t* g) {
-    int16_t cx = g->pupil_cx, cy = g->pupil_cy, r = g->pupil_r;
-    if (r < 2) { draw_pupil_normal(d, g); return; }
-    int16_t uw = r + 2;
-    for (int16_t dy = 0; dy <= r; dy++) { float norm = (float)dy / (float)r, curve = 1.0f - norm * norm * 0.5f; int16_t dx = (int16_t)((float)uw * curve * 0.7f); if (dx < 1) dx = 1; d->drawHLine(cx - dx, cy + dy, dx * 2); }
-    for (int16_t dy = -r; dy < 0; dy++) { float norm = (float)(-dy) / (float)r, curve = 1.0f - norm * norm * 0.3f; int16_t dx = (int16_t)((float)uw * curve * 0.40f); if (dx < 1) dx = 1; d->drawHLine(cx - dx, cy + dy, dx * 2); }
-    { uint32_t star_t = millis() % 1800; float alpha = 0.0f;
-        if (star_t < 80) alpha = (float)star_t / 80.0f;
-        else if (star_t < 160) alpha = 1.0f - (float)(star_t - 80) / 80.0f;
-        if (alpha > 0.02f) { d->setDrawColor(1); uint8_t ss = (uint8_t)(alpha * 5.0f); if (ss < 1) ss = 1; if (ss > 4) ss = 4;
-            for (uint8_t s = 0; s < ss; s++) { int16_t sx = cx - r + (rand() % (r * 2)), sy = cy - r + (rand() % (r * 2)); int16_t sl = 2 + (rand() % 3); d->drawHLine(sx - sl, sy, sl * 2); d->drawVLine(sx, sy - sl, sl * 2); }
-            d->setDrawColor(0); } }
+    /* 弯月由 eye_draw_happy_arc 绘制, 此处仅补充星光粒子 */
+    uint32_t star_t = millis() % 1200;
+    float alpha = 0.0f;
+    if (star_t < 80) alpha = (float)star_t / 80.0f;
+    else if (star_t < 160) alpha = 1.0f - (float)(star_t - 80) / 80.0f;
+    if (alpha > 0.02f) {
+        d->setDrawColor(1);
+        uint8_t ss = (uint8_t)(alpha * 4.0f);
+        if (ss < 1) ss = 1; if (ss > 3) ss = 3;
+        for (uint8_t s = 0; s < ss; s++) {
+            int16_t sx = g->pupil_cx - g->pupil_r + (rand() % (g->pupil_r * 2));
+            int16_t sy = g->pupil_cy - g->pupil_r + (rand() % (g->pupil_r * 2));
+            int16_t sl = 1 + (rand() % 2);
+            d->drawHLine(sx - sl, sy, sl * 2);
+            d->drawVLine(sx, sy - sl, sl * 2);
+        }
+        d->setDrawColor(0);
+    }
 }
 
 static void draw_pupil_star(U8G2* d, const EyeGeom_t* g) {
@@ -839,13 +854,28 @@ void eye_draw_lid_mask(U8G2* d, const EyeGeom_t* gm) {
 }
 
 void eye_draw_happy_arc(U8G2* d, const EyeGeom_t* gm) {
-    d->setDrawColor(0);
-    int16_t arc_cx = gm->eye_l + (gm->eye_r - gm->eye_l) / 2;
-    int16_t arc_r  = (gm->eye_r - gm->eye_l);
-    d->drawDisc(arc_cx, gm->eye_t - 8, arc_r, U8G2_DRAW_ALL);
-    d->setDrawColor(1);
-}
+    /* Happy 弯月已由 lid_mask 实现, 此处仅绘制星光粒子 (在暗色 lid 上闪烁) */
+    int16_t eye_w = gm->eye_r - gm->eye_l;
+    int16_t eye_h = gm->eye_b - gm->eye_t;
+    uint32_t star_t = millis() % 1500;
+    float alpha = 0.0f;
+    if (star_t < 100) alpha = (float)star_t / 100.0f;
+    else if (star_t < 200) alpha = 1.0f - (float)(star_t - 100) / 100.0f;
 
+    if (alpha > 0.05f) {
+        d->setDrawColor(1);
+        uint8_t cnt = (uint8_t)(alpha * 4.0f);
+        if (cnt < 1) cnt = 1; if (cnt > 3) cnt = 3;
+        for (uint8_t s = 0; s < cnt; s++) {
+            int16_t sx = gm->eye_l + 6 + (rand() % (eye_w - 12));
+            int16_t sy = gm->eye_t + eye_h / 4 + (rand() % (eye_h / 2));
+            int16_t sl = 2 + (rand() % 3);
+            d->drawHLine(sx - sl, sy, sl * 2);
+            d->drawVLine(sx, sy - sl, sl * 2);
+        }
+        d->setDrawColor(0);
+    }
+}
 static void eye_draw_tears(U8G2* d, const EyeGeom_t* gm) {
     int16_t pcx = gm->pupil_cx, pcy = gm->pupil_cy, pr = gm->pupil_r;
     int16_t toy = gm->eye_b - gm->lid_bottom_h; if (toy < pcy + pr) toy = pcy + pr;
@@ -871,27 +901,50 @@ void eye_draw_sad_water(U8G2* d, const EyeGeom_t* gm) {
 }
 
 void eye_draw_sweat(U8G2* d, const EyeGeom_t* gm) {
-    int16_t soy = gm->eye_t + 3; d->setDrawColor(0); const uint32_t cm = 800;
-    uint32_t t = millis() % cm; int16_t sx1 = gm->is_left ? (gm->eye_l + 4) : (gm->eye_r - 4);
-    int16_t y1 = soy + (int16_t)((float)t * 0.028f); int16_t smy = gm->eye_b - 1;
+    int16_t soy = gm->eye_t + 3;
+    d->setDrawColor(0);
+    const uint32_t cm = 600;  /* 加快循环 */
+    uint32_t t = millis() % cm;
+
+    /* 大汗珠 #1: r=4, 快速滑落 */
+    int16_t sx1 = gm->is_left ? (gm->eye_l + 4) : (gm->eye_r - 4);
+    int16_t y1 = soy + (int16_t)((float)t * 0.045f);
+    int16_t smy = gm->eye_b - 1;
     if (y1 > smy) y1 = smy; if (y1 < soy) y1 = soy;
-    if (y1 < smy) { d->drawDisc(sx1, y1 - 1, 3, U8G2_DRAW_ALL); d->drawTriangle(sx1 - 3, y1, sx1 + 3, y1, sx1, y1 + 5); }
-    int16_t sx2 = gm->is_left ? (gm->eye_l + 14) : (gm->eye_r - 14); uint32_t t2 = (millis() + 400) % cm;
-    int16_t y2 = soy + (int16_t)((float)t2 * 0.022f); if (y2 > smy) y2 = smy; if (y2 < soy) y2 = soy;
-    if (y2 < smy) { d->drawDisc(sx2, y2 - 1, 2, U8G2_DRAW_ALL); d->drawTriangle(sx2 - 2, y2, sx2 + 2, y2, sx2, y2 + 3); }
-    if (t > 760 && t < 800) { d->setDrawColor(1); d->drawPixel(sx1 - 2, smy - 1); d->drawPixel(sx1 + 2, smy - 1); d->drawPixel(sx1, smy - 2); d->setDrawColor(0); }
+    if (y1 < smy) {
+        d->drawDisc(sx1, y1 - 1, 4, U8G2_DRAW_ALL);
+        d->drawTriangle(sx1 - 4, y1, sx1 + 4, y1, sx1, y1 + 5);
+    }
+
+    /* 大汗珠 #2: r=3, 错相滑落 */
+    int16_t sx2 = gm->is_left ? (gm->eye_l + 16) : (gm->eye_r - 16);
+    uint32_t t2 = (millis() + 300) % cm;
+    int16_t y2 = soy + (int16_t)((float)t2 * 0.038f);
+    if (y2 > smy) y2 = smy; if (y2 < soy) y2 = soy;
+    if (y2 < smy) {
+        d->drawDisc(sx2, y2 - 1, 3, U8G2_DRAW_ALL);
+        d->drawTriangle(sx2 - 3, y2, sx2 + 3, y2, sx2, y2 + 4);
+    }
+
+    /* 汗珠溅落飞溅效果 */
+    if (t > 570 && t < 600) {
+        d->setDrawColor(1);
+        d->drawPixel(sx1 - 2, smy - 1); d->drawPixel(sx1 + 2, smy - 1);
+        d->drawPixel(sx1, smy - 2); d->drawPixel(sx1 - 1, smy - 2); d->drawPixel(sx1 + 1, smy - 2);
+        d->setDrawColor(0);
+    }
 }
 
 void eye_render(U8G2* d, EyeConfig_t* cfg, bool is_left) {
     const EyeStyle_t* s = eye_style_get(); EyeGeom_t gm;
     eye_geom_compute(&gm, cfg, s, is_left);
     d->setDrawColor(1); eye_draw_body(d, &gm);
-    if (cfg->active_expr == 1) eye_draw_happy_arc(d, &gm);
     eye_draw_pupil(d, &gm);
     if (cfg->active_expr == 3) { eye_draw_sad_water(d, &gm); eye_draw_tears(d, &gm); }
     if (cfg->active_expr == 6) eye_draw_sweat(d, &gm);
     eye_draw_shine(d, &gm);
-    if (cfg->active_expr != 1) eye_draw_lid_mask(d, &gm);
+    eye_draw_lid_mask(d, &gm);
+    if (cfg->active_expr == 1) eye_draw_happy_arc(d, &gm);
 }
 
 void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy) {
@@ -902,7 +955,7 @@ void eye_config_init(EyeConfig_t* cfg, uint8_t cx, uint8_t cy) {
     cfg->target_lid_bottom = 0.0f; cfg->target_lid_slope = 0.0f;
     cfg->target_pupil_scale = 1.0f; cfg->target_pupil_type = PUPIL_NORMAL; cfg->cur_pupil_type = PUPIL_NORMAL;
     cfg->cur_lid_top = 0.0f; cfg->cur_lid_top_l = 0.0f; cfg->cur_lid_top_r = 0.0f;
-    cfg->cur_lid_bottom = 0.0f; cfg->cur_lid_slope = 0.0f; cfg->cur_pupil_scale = 1.0f;
+    cfg->cur_lid_bottom = 0.0f; cfg->cur_lid_slope = 0.0f; cfg->cur_pupil_scale = 1.0f; cfg->target_pupil_scale_r = 0.0f; cfg->cur_pupil_scale_r = 1.0f;
     cfg->anim_peak_scale = 0.0f; cfg->anim_start_ms = 0; cfg->anim_duration_ms = 0;
     cfg->sleepy_phase_ms = 0; cfg->sleepy_lid = 0.0f; cfg->sleepy_struggle_sub = 0;
     cfg->brow_phase = 0.0f; cfg->brow_angry_phase = 0.0f; cfg->brow_burst_timer = 0.0f;
@@ -946,29 +999,89 @@ void eye_set_expression(EyeConfig_t* cfg, uint8_t ei) {
 
 void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
     if (cfg->anim_peak_scale > 0.001f || cfg->anim_peak_scale < -0.001f) { uint32_t el = now_ms - cfg->anim_start_ms; if (el >= cfg->anim_duration_ms) { cfg->anim_peak_scale = 0.0f; if (cfg->active_expr < 8) cfg->target_pupil_scale = EXPRESSIONS[cfg->active_expr].pupil_scale; } }
+    /* ---- [1] Smirk 滑稽笑: 左眼半闭 + 右眼狡黠 + 斜视漂移 ---- */
     if (cfg->active_expr == 1) {
-        if (cfg->happy_wink_eye == 0) { if (now_ms >= cfg->happy_wink_next_ms) { uint32_t es = now_ms - cfg->happy_wink_next_ms; cfg->happy_wink_eye = (es % 2 == 0) ? 1 : 2; cfg->happy_wink_start_ms = now_ms; } }
-        else { uint32_t we = now_ms - cfg->happy_wink_start_ms;
-            if (we < 90) { float t = (float)we / 90.0f; if (cfg->happy_wink_eye == 1) cfg->target_lid_top_l = ease_in(t); else cfg->target_lid_top_r = ease_in(t); }
-            else if (we < 180) { float t = (float)(we - 90) / 90.0f; if (cfg->happy_wink_eye == 1) cfg->target_lid_top_l = 1.0f - ease_out(t); else cfg->target_lid_top_r = 1.0f - ease_out(t); }
-            else { if (cfg->happy_wink_eye == 1) cfg->target_lid_top_l = EXPRESSIONS[1].lid_top_l; else cfg->target_lid_top_r = EXPRESSIONS[1].lid_top_r; cfg->happy_wink_eye = 0; cfg->happy_wink_next_ms = now_ms + 2200 + (rand() % 2500); } }
+        uint32_t smirk_phase = (now_ms / 2200) % 3;
+        if (smirk_phase == 0)      { cfg->target_look_x = -22; cfg->target_look_y = 6; }
+        else if (smirk_phase == 1) { cfg->target_look_x = 18; cfg->target_look_y = -4; }
+        else                       { cfg->target_look_x = -6; cfg->target_look_y = 10; }
     }
-    if (cfg->active_expr == 4) { uint32_t st = now_ms % 600;
-        if (st < 150) { cfg->target_lid_top_l = -0.06f; cfg->target_lid_top_r = 0.40f; }
-        else if (st < 300) { cfg->target_lid_top_l = 0.40f; cfg->target_lid_top_r = -0.06f; }
-        else if (st < 450) { cfg->target_lid_top_l = -0.10f; cfg->target_lid_top_r = -0.10f; }
-        else { cfg->target_lid_top_l = 0.12f; cfg->target_lid_top_r = 0.12f; }
+    /* ---- [4] Surprised: 160ms左眼瞳孔巨→缩, 右眼同时缩→巨 (反向跳动!) ---- */
+    if (cfg->active_expr == 4) {
+        uint32_t st = now_ms % 160;
+        if (st < 40) {
+            cfg->target_lid_top_l = -0.30f;  cfg->target_lid_top_r =  0.60f;
+            cfg->target_pupil_scale   = 0.40f + (float)st / 40.0f * 1.30f;  /* 左: 0.4→1.7 巨! */
+            cfg->target_pupil_scale_r = 1.70f - (float)st / 40.0f * 1.30f;  /* 右: 1.7→0.4 反向! */
+        } else if (st < 80) {
+            cfg->target_lid_top_l = -0.30f;  cfg->target_lid_top_r =  0.60f;
+            cfg->target_pupil_scale   = 1.70f - (float)(st - 40) / 40.0f * 1.30f;
+            cfg->target_pupil_scale_r = 0.40f + (float)(st - 40) / 40.0f * 1.30f;
+        } else if (st < 120) {
+            cfg->target_lid_top_l =  0.60f;  cfg->target_lid_top_r = -0.30f;
+            cfg->target_pupil_scale   = 0.40f + (float)(st - 80) / 40.0f * 1.30f;
+            cfg->target_pupil_scale_r = 1.70f - (float)(st - 80) / 40.0f * 1.30f;
+        } else {
+            cfg->target_lid_top_l =  0.60f;  cfg->target_lid_top_r = -0.30f;
+            cfg->target_pupil_scale   = 1.70f - (float)(st - 120) / 40.0f * 1.30f;
+            cfg->target_pupil_scale_r = 0.40f + (float)(st - 120) / 40.0f * 1.30f;
+        }
     }
-    if (cfg->active_expr == 5) {
-        cfg->sleepy_phase_ms += 33; uint32_t cy = cfg->sleepy_phase_ms % 4000;
-        if (cy < 2000) { float t = (float)cy / 2000.0f; cfg->sleepy_lid = 0.50f + t * 0.42f; float dr = sinf((float)cy * 0.0025f) * 12.0f; cfg->target_look_x = (int8_t)dr; cfg->target_look_y = (int8_t)(cosf((float)cy * 0.003f) * 6.0f); int16_t bs = (int16_t)(t * t * 15.0f); cfg->brow_offset_l = -bs; cfg->brow_offset_r = -bs; cfg->sleepy_struggle_sub = 0; }
-        else if (cy < 2400) { float t = (float)(cy - 2000) / 400.0f; float sn = 1.0f - t; cfg->sleepy_lid = 0.92f - sn * 0.78f; cfg->target_look_x = 0; cfg->target_look_y = 0; int16_t bp; if (t < 0.3f) bp = (int16_t)(expf(-t * 5.0f) * 18.0f); else bp = (int16_t)(3.0f * (1.0f - t)); cfg->brow_offset_l = bp; cfg->brow_offset_r = bp; cfg->sleepy_struggle_sub = 1; }
-        else if (cy < 3100) { float t = (float)(cy - 2400) / 700.0f; float wb = sinf(t * M_PI * 3.0f) * 0.06f; cfg->sleepy_lid = 0.14f + wb; cfg->target_look_x = (int8_t)(sinf(t * M_PI * 2.0f) * 18.0f); cfg->target_look_y = (int8_t)(cosf(t * M_PI * 0.9f) * 5.0f); cfg->brow_offset_l = (int16_t)(2.0f * (1.0f - t)); cfg->brow_offset_r = (int16_t)(2.0f * (1.0f - t)); cfg->sleepy_struggle_sub = 2; }
-        else { float t = (float)(cy - 3100) / 900.0f; cfg->sleepy_lid = 0.14f + t * 0.38f; cfg->target_look_x = 0; cfg->target_look_y = 0; cfg->brow_offset_l = (int16_t)(-t * 8.0f); cfg->brow_offset_r = (int16_t)(-t * 8.0f); cfg->sleepy_struggle_sub = 3; }
-        cfg->target_lid_top = cfg->sleepy_lid;
+            /* ---- [5] Sleepy: 极限犯困挣扎 ---- */ if (cfg->active_expr == 5) { cfg->sleepy_phase_ms += 33; uint32_t cy = cfg->sleepy_phase_ms % 4000; if (cy < 2000) { /* 犯困挣扎: lid 逼近 0.95, 眉毛夸张向内收 (用力皱眉) */
+            float t = (float)cy / 2000.0f;
+            cfg->sleepy_lid = 0.45f + t * 0.50f;
+            float dr = sinf((float)cy * 0.0025f) * 12.0f;
+            cfg->target_look_x = (int8_t)dr;
+            cfg->target_look_y = (int8_t)(cosf((float)cy * 0.003f) * 5.0f);
+            int16_t bs = (int16_t)(t * t * 18.0f);
+            cfg->brow_offset_l = -bs; cfg->brow_offset_r = -bs;
+            cfg->sleepy_struggle_sub = 0;
+        } else if (cy < 2400) {
+            /* 惊醒瞬间: lid 跳到 0.05, 眉毛瞬间弹开高挑到 +20 */
+            float t = (float)(cy - 2000) / 400.0f;
+            float sn = 1.0f - t;
+            cfg->sleepy_lid = 0.95f - sn * 0.90f;
+            cfg->target_look_x = 0; cfg->target_look_y = 0;
+            int16_t bp;
+            if (t < 0.3f) bp = (int16_t)(expf(-t * 5.0f) * 20.0f);
+            else bp = (int16_t)(5.0f * (1.0f - t));
+            cfg->brow_offset_l = bp; cfg->brow_offset_r = bp;
+            cfg->sleepy_struggle_sub = 1;
+        } else if (cy < 3100) {
+            /* 眼球不受控乱晃 + 眉毛微颤 */
+            float t = (float)(cy - 2400) / 700.0f;
+            float wb = sinf(t * M_PI * 3.0f) * 0.06f;
+            cfg->sleepy_lid = 0.05f + wb;
+            cfg->target_look_x = (int8_t)(sinf(t * M_PI * 3.5f) * 24.0f);
+            cfg->target_look_y = (int8_t)(cosf(t * M_PI * 1.3f) * 10.0f);
+            cfg->brow_offset_l = (int16_t)(sinf(t * M_PI * 2.0f) * 6.0f);
+            cfg->brow_offset_r = (int16_t)(cosf(t * M_PI * 2.5f) * 5.0f);
+            cfg->sleepy_struggle_sub = 2;
+        } else {
+            /* 重新犯困, 眉毛再次内收 */
+            float t = (float)(cy - 3100) / 900.0f;
+            cfg->sleepy_lid = 0.05f + t * 0.40f;
+            cfg->target_look_x = 0; cfg->target_look_y = 0;
+            cfg->brow_offset_l = (int16_t)(-t * 15.0f);
+            cfg->brow_offset_r = (int16_t)(-t * 15.0f);
+            cfg->sleepy_struggle_sub = 3;
+        }
+        cfg->target_lid_top   = cfg->sleepy_lid; cfg->target_lid_top_l = cfg->sleepy_lid; cfg->target_lid_top_r = cfg->sleepy_lid;
     }
-    if (cfg->active_expr == 6) { float br = 0.75f + sinf((float)now_ms * 0.020f) * 0.18f; cfg->target_pupil_scale = br; if (now_ms >= cfg->panic_scan_next_ms) { cfg->target_look_x = (int8_t)((rand() % 101) - 50); cfg->target_look_y = (int8_t)((rand() % 61) - 30); cfg->panic_scan_next_ms = now_ms + 80 + (rand() % 121); } }
-    if (cfg->active_expr == 7) { cfg->target_pupil_scale = 1.0f; }    if (cfg->active_expr < 8 && cfg->active_expr != 5) {
+    /* ---- [6] Panic: 高频乱颤扫视 (50~100ms) + 大幅漂移 + 瞳孔抖动 ---- */
+    if (cfg->active_expr == 6) {
+        float br = 0.60f + sinf((float)now_ms * 0.035f) * 0.25f;
+        cfg->target_pupil_scale = br;
+        if (now_ms >= cfg->panic_scan_next_ms) {
+            cfg->target_look_x = (int8_t)((rand() % 121) - 60);
+            cfg->target_look_y = (int8_t)((rand() % 81) - 40);
+            cfg->panic_scan_next_ms = now_ms + 50 + (rand() % 51);
+        }
+    }
+    /* ---- [7] Excited: 心跳由 draw_pupil_heart 驱动, 此处保持基础 scale ---- */
+    if (cfg->active_expr == 7) { cfg->target_pupil_scale = 1.20f; }
+    /* ---- 眉毛动画引擎 (所有非 Sleepy 表情) ---- */
+    if (cfg->active_expr < 8 && cfg->active_expr != 5) {
         const ExpressionDef_t* e = &EXPRESSIONS[cfg->active_expr]; float f = e->brow_freq, a = e->brow_amp, as = e->brow_asymmetry, ol = 0.0f, orr = 0.0f;
         switch (e->brow_anim) {
         case BROW_ANIM_BREATHE: cfg->brow_anim_phase += f; ol = sinf(cfg->brow_anim_phase) * a; orr = ol; break;
@@ -983,9 +1096,9 @@ void eye_expr_update(EyeConfig_t* cfg, uint32_t now_ms) {
         }
         cfg->brow_offset_l = (int16_t)ol; cfg->brow_offset_r = (int16_t)orr;
     }
+    /* 所有参数的通用平滑插值 */
     cfg->cur_lid_top += (cfg->target_lid_top - cfg->cur_lid_top) * 0.18f; cfg->cur_lid_top_l += (cfg->target_lid_top_l - cfg->cur_lid_top_l) * 0.18f; cfg->cur_lid_top_r += (cfg->target_lid_top_r - cfg->cur_lid_top_r) * 0.18f; cfg->cur_lid_bottom += (cfg->target_lid_bottom - cfg->cur_lid_bottom) * 0.18f; cfg->cur_lid_slope += (cfg->target_lid_slope - cfg->cur_lid_slope) * 0.18f; cfg->cur_pupil_scale += (cfg->target_pupil_scale - cfg->cur_pupil_scale) * 0.18f; cfg->cur_pupil_type = cfg->target_pupil_type;
 }
-
 void eye_attention_update(EyeConfig_t* cfg, uint32_t now_ms) {
     if (cfg->active_expr != 0 && cfg->active_expr != 255) return; if (cfg->lid > 0.1f) return;
     if (cfg->attention_phase == 0) { if (now_ms >= cfg->attention_next_ms) { cfg->attention_prev_x = cfg->target_look_x; cfg->attention_prev_y = cfg->target_look_y; cfg->attention_target_x = (int8_t)((rand() % 61) - 30); cfg->attention_target_y = (int8_t)((rand() % 41) - 20); cfg->attention_phase = 1; } }

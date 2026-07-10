@@ -135,15 +135,14 @@ typedef struct {
     float        target_lid_bottom;
     float        target_lid_slope;
     PupilType_t  target_pupil_type;
-    float        target_pupil_scale;
-
+    float        target_pupil_scale; float target_pupil_scale_r;
     /* 当前渐变值 */
     float   cur_lid_top;
     float   cur_lid_top_l;
     float   cur_lid_top_r;
     float   cur_lid_bottom;
     float   cur_lid_slope;
-    float   cur_pupil_scale;
+    float   cur_pupil_scale; float cur_pupil_scale_r;
     PupilType_t cur_pupil_type;
 
     /* 峰值动画回弹 */
